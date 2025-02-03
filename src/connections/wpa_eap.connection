@@ -1,0 +1,17 @@
+[connection]
+id=WPA_EAP_SSID
+type=wifi
+interface-name=wlan0
+
+[wifi]
+mode=infrastructure
+ssid=WPA_EAP_SSID
+
+[ipv4]
+method=auto
+
+[ipv6]
+addr-gen-mode=default
+method=auto
+
+[proxy]
