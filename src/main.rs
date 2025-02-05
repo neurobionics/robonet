@@ -4,6 +4,8 @@ use std::fs;
 use std::path::Path;
 use std::collections::HashMap;
 use std::io::Read;
+use std::process::Command;
+use std::thread;
 
 const SYSTEM_CONNECTIONS_PATH: &str = "/etc/NetworkManager/system-connections/";
 const NETWORK_MANAGER_CONFIG_PATH: &str = "/etc/NetworkManager/NetworkManager.conf";
@@ -122,6 +124,15 @@ fn write_connection_file(name: &str, content: &str) -> Result<()> {
     let mut perms = fs::metadata(path)?.permissions();
     perms.set_mode(0o600);
     fs::set_permissions(path, perms)?;
+
+    // Reload all connections in NetworkManager
+    Command::new("nmcli")
+        .args(["connection", "reload"])
+        .output()
+        .with_context(|| "Failed to reload NetworkManager connections")?;
+
+    // Small delay to ensure NetworkManager processes the new connection
+    thread::sleep(std::time::Duration::from_secs(1));
 
     Ok(())
 }
