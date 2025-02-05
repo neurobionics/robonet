@@ -44,7 +44,7 @@ pub fn validate_args(mode: &NetworkMode, ip: &Option<String>, user_id: &Option<S
     Ok(())
 }
 
-pub fn generate_connection_file(mode: &NetworkMode, name: &str, password: &str, ip: &Option<String>, user_id: &Option<String>) -> Result<String> {
+pub fn generate_connection_file(mode: &NetworkMode, name: &str, password: &str, priority: &str, ip: &Option<String>, user_id: &Option<String>) -> Result<String> {
     let template_path = match mode {
         NetworkMode::AP => "src/connections/ap.nmconnection",
         NetworkMode::WPA => "src/connections/wpa.nmconnection",
@@ -59,15 +59,18 @@ pub fn generate_connection_file(mode: &NetworkMode, name: &str, password: &str, 
         NetworkMode::AP => {
             replacements.insert("{AP_SSID}", name);
             replacements.insert("{AP_PSK}", password);
+            replacements.insert("{AP_PRIORITY}", priority);
             replacements.insert("{AP_IP_ADDRESS}", ip.as_ref().unwrap());
         },
         NetworkMode::WPA => {
             replacements.insert("{NETWORK_SSID}", name);
             replacements.insert("{NETWORK_PSK}", password);
+            replacements.insert("{NETWORK_PRIORITY}", priority);
         },
         NetworkMode::WPAEAP => {
             replacements.insert("{NETWORK_SSID}", name);
             replacements.insert("{NETWORK_PASSWORD}", password);
+            replacements.insert("{NETWORK_PRIORITY}", priority);            
             replacements.insert("{NETWORK_IDENTITY}", user_id.as_ref().unwrap());
         },
     }

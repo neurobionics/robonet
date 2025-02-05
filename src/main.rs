@@ -27,6 +27,10 @@ enum Commands {
         #[arg(short = 'p', long = "password")]
         password: String,
 
+        /// Priority for auto connect
+        #[arg(short = 'r', long = "priority")]
+        priority: String,
+
         /// IP address (required for AP mode)
         #[arg(short = 'i', long = "ip")]
         ip: Option<String>,
@@ -50,7 +54,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
-        Commands::AddNetwork { mode, name, password, ip, user_id } => {
+        Commands::AddNetwork { mode, name, password, priority, ip, user_id } => {
             validate_args(mode, ip, user_id)?;
 
             // If AP mode, ensure dnsmasq is configured
@@ -59,20 +63,23 @@ fn main() -> Result<()> {
                     .with_context(|| "Failed to configure dnsmasq for AP mode")?;
             }
 
-            let content = generate_connection_file(mode, name, password, ip, user_id)?;
+            let content = generate_connection_file(mode, name, password, priority, ip, user_id)?;
             write_connection_file(name, &content)?;
 
             match mode {
                 NetworkMode::AP => {
                     println!("Added AP network: {}", name);
                     println!("IP: {}", ip.as_ref().unwrap());
+                    println!("Priority: {}", priority);
                     println!("Note: NetworkManager configuration updated for AP mode");
                 },
                 NetworkMode::WPA => {
                     println!("Added WPA network: {}", name);
+                    println!("Priority: {}", priority);
                 },
                 NetworkMode::WPAEAP => {
                     println!("Added WPAEAP network: {}", name);
+                    println!("Priority: {}", priority);
                     println!("User ID: {}", user_id.as_ref().unwrap());
                 },
             }

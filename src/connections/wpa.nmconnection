@@ -3,7 +3,7 @@ id={NETWORK_SSID}
 type=wifi
 interface-name=wlan0
 autoconnect=true
-priority=100
+autoconnect-priority={NETWORK_PRIORITY}
 
 [wifi]
 mode=infrastructure
