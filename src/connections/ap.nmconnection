@@ -1,5 +1,5 @@
 [connection]
-id=AP_SSID
+id={AP_SSID}
 type=wifi
 interface-name=wlan0
 
@@ -7,14 +7,14 @@ interface-name=wlan0
 band=bg
 channel=7
 mode=ap
-ssid=AP_SSID
+ssid={AP_SSID}
 
 [wifi-security]
 key-mgmt=wpa-psk
-psk=AP_PSK
+psk={AP_PSK}
 
 [ipv4]
-address1=AP_IP_ADDRESS/24
+address1={AP_IP_ADDRESS}/24
 method=manual
 
 [ipv6]
