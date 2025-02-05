@@ -1,6 +1,9 @@
 use clap::Parser;
 use anyhow::{Context, Result};
 
+const SYSTEM_CONNECTIONS_PATH: &str = "/etc/NetworkManager/system-connections/";
+const NETWORK_MANAGER_CONFIG_PATH: &str = "/etc/NetworkManager/NetworkManager.conf";
+
 #[derive(Parser)]
 struct Cli {
     pattern: String,
