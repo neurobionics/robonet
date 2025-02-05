@@ -7,4 +7,7 @@ edition = "2021"
 anyhow = "1.0.95"
 clap = { version = "4.5.27", features = ["derive"] }
 nix = "0.26.0"
-
+lettre = { version = "0.10", features = ["smtp-transport", "tokio1", "tokio1-native-tls"] }
+log = "0.4"
+env_logger = "0.10"
+chrono = "0.4"
