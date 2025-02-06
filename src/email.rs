@@ -6,7 +6,6 @@ use lettre::{
 };
 use std::process::Command;
 use uuid::Uuid;
-use std::fs;
 
 pub struct EmailConfig {
     pub smtp_server: String,
@@ -92,9 +91,8 @@ pub fn send_login_ticket(config: &EmailConfig, reason: LoginTicketReason) -> Res
         LoginTicketReason::ManualCheck => "Manual Execution",
     };
 
-    // Read the template file
-    let template = fs::read_to_string("src/templates/emails/login_ticket.html")
-        .context("Failed to read email template")?;
+    // Read the template file from the compiled output directory
+    let template = include_str!(concat!(env!("OUT_DIR"), "/templates/emails/login_ticket.html"));
 
     let html_content = template
         .replace("{STATUS_TYPE}", status_type)
