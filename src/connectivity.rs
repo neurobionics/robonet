@@ -1,12 +1,10 @@
+use anyhow::{Context, Result, anyhow};
+use log::{info, error, warn};
+use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
-use anyhow::{Context, Result, anyhow};
-use lettre::message::Message;
-use lettre::transport::smtp::authentication::Credentials;
-use lettre::{SmtpTransport, Transport};
-use log::{info, error, warn};
-use std::path::PathBuf;
+use crate::email::{EmailConfig, send_network_status_email};
 
 pub struct NetworkConfig {
     pub notification_email: String,
@@ -100,8 +98,8 @@ impl ConnectivityManager {
         // Send email if IP has changed or this is the first successful connection
         if self.last_ip.as_ref() != Some(&current_ip) {
             info!("IP address changed or initial connection");
-            self.send_ip_email(&current_ip)?;
             self.last_ip = Some(current_ip);
+            self.send_ip_email()?;
         }
 
         Ok(())
@@ -212,30 +210,15 @@ impl ConnectivityManager {
         Ok(())
     }
 
-    fn send_ip_email(&self, ip: &str) -> Result<()> {
-        let email = Message::builder()
-            .from("Raspberry Pi <raspberry.pi@localhost>".parse()?)
-            .to(self.config.notification_email.parse()?)
-            .subject("Raspberry Pi IP Address Update")
-            .body(format!(
-                "Your Raspberry Pi's IP address is: {}\n\nTimestamp: {}", 
-                ip,
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-            ))?;
+    fn send_ip_email(&self) -> Result<()> {
+        let email_config = EmailConfig {
+            smtp_server: self.config.smtp_server.clone(),
+            smtp_user: self.config.smtp_user.clone(),
+            smtp_password: self.config.smtp_password.clone(),
+            recipient: self.config.notification_email.clone(),
+        };
 
-        let creds = Credentials::new(
-            self.config.smtp_user.clone(),
-            self.config.smtp_password.clone(),
-        );
-
-        let mailer = SmtpTransport::relay(&self.config.smtp_server)?
-            .credentials(creds)
-            .build();
-
-        mailer.send(&email)
-            .context("Failed to send email")?;
-        
-        info!("Successfully sent IP notification email");
-        Ok(())
+        let ip_changed = self.last_ip.is_some();
+        send_network_status_email(&email_config, ip_changed)
     }
 }

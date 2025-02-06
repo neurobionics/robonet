@@ -8,7 +8,7 @@ mod connectivity;
 use std::collections::HashMap;
 use std::process::Command;
 mod email;
-use email::{EmailConfig, send_status_email};
+use email::{EmailConfig, send_network_status_email};
 
 // Add the template as a static string in the binary
 const SERVICE_TEMPLATE: &str = include_str!("services/robot-network-manager.service");
@@ -90,6 +90,9 @@ enum Commands {
         #[arg(short = 'v', long = "value")]
         value: String,
     },
+
+    /// Send network status email using configured settings
+    SendStatusEmail,
 }
 
 fn check_root_privileges() -> Result<()> {
@@ -109,22 +112,22 @@ fn install_service(
 ) -> Result<()> {
     let email = email
         .map(String::from)
-        .or_else(|| std::env::var("EMAIL_ADDRESS").ok())
+        .or_else(|| get_env_var("EMAIL_ADDRESS").ok())
         .context("Email address not provided. Set EMAIL_ADDRESS environment variable or use --email flag")?;
     
     let smtp_server = smtp_server
         .map(String::from)
-        .or_else(|| std::env::var("SMTP_SERVER").ok())
+        .or_else(|| get_env_var("SMTP_SERVER").ok())
         .context("SMTP server not provided. Set SMTP_SERVER environment variable or use --smtp-server flag")?;
     
     let smtp_user = smtp_user
         .map(String::from)
-        .or_else(|| std::env::var("SMTP_USER").ok())
+        .or_else(|| get_env_var("SMTP_USER").ok())
         .context("SMTP username not provided. Set SMTP_USER environment variable or use --smtp-user flag")?;
     
     let smtp_password = smtp_password
         .map(String::from)
-        .or_else(|| std::env::var("SMTP_PASSWORD").ok())
+        .or_else(|| get_env_var("SMTP_PASSWORD").ok())
         .context("SMTP password not provided. Set SMTP_PASSWORD environment variable or use --smtp-password flag")?;
 
     // Test email configuration before installing service
@@ -136,7 +139,7 @@ fn install_service(
     };
 
     // Test email configuration
-    send_status_email(&email_config)?;
+    send_network_status_email(&email_config, false)?;
 
     let executable_path = std::env::current_exe()
         .context("Failed to get executable path")?;
@@ -223,6 +226,27 @@ fn set_environment_variable(name: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+fn get_env_var(name: &str) -> Result<String> {
+    // First try standard env var
+    if let Ok(value) = std::env::var(name) {
+        return Ok(value);
+    }
+
+    // If not found, try reading from /etc/environment
+    let content = std::fs::read_to_string("/etc/environment")
+        .context("Failed to read /etc/environment")?;
+    
+    for line in content.lines() {
+        if let Some((key, value)) = line.split_once('=') {
+            if key.trim() == name {
+                return Ok(value.trim().to_string());
+            }
+        }
+    }
+
+    Err(anyhow!("{} not found in environment or /etc/environment. Please run 'install-service' first to configure email settings", name))
+}
+
 fn main() -> Result<()> {
     // Initialize logging
     env_logger::init();
@@ -295,6 +319,24 @@ fn main() -> Result<()> {
 
         Commands::SetEnv { name, value } => {
             set_environment_variable(name, value)?;
+        }
+
+        Commands::SendStatusEmail => {
+            // Try to load email configuration from environment variables or /etc/environment
+            let email = get_env_var("EMAIL_ADDRESS")?;
+            let smtp_server = get_env_var("SMTP_SERVER")?;
+            let smtp_user = get_env_var("SMTP_USER")?;
+            let smtp_password = get_env_var("SMTP_PASSWORD")?;
+
+            let email_config = EmailConfig {
+                smtp_server,
+                smtp_user,
+                smtp_password,
+                recipient: email,
+            };
+
+            send_network_status_email(&email_config, true)?;
+            println!("Network status email sent successfully!");
         }
     }
 

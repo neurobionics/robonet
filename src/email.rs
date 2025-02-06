@@ -113,8 +113,14 @@ impl SystemInfo {
     }
 }
 
-pub fn send_status_email(config: &EmailConfig) -> Result<()> {
+pub fn send_network_status_email(config: &EmailConfig, ip_changed: bool) -> Result<()> {
     let system_info = SystemInfo::collect()?;
+    
+    let status_type = if ip_changed {
+        "IP Address Change Report"
+    } else {
+        "Initial Connection Report"
+    };
     
     let html_content = format!(
         r#"<!DOCTYPE html>
@@ -130,8 +136,7 @@ pub fn send_status_email(config: &EmailConfig) -> Result<()> {
                                 <h1 style="font-weight:400;text-align:center;border-radius:0.375rem;padding:1rem;margin:0 0 12px;border:1px solid rgb(82,82,91)">
                                     <p style="font-size:14px;line-height:28px;margin:16px 0;color:rgb(205,205,205);text-align:center;margin-bottom:12px">
                                         <strong style="color:rgb(255,255,255);font-size:32px">Raspberry Pi Network Status</strong><br />
-                                        Initial Connection Report
-                                    </p>
+                                        {}</p>
                                 </h1>
                                 <table align="center" width="100%" style="border-radius:0.375rem;padding:1rem;margin:auto;border:1px solid rgb(82,82,91)">
                                     <tbody style="color:rgb(255,255,255)">
@@ -167,6 +172,7 @@ pub fn send_status_email(config: &EmailConfig) -> Result<()> {
                 </table>
             </body>
         </html>"#,
+        status_type,
         system_info.hostname,
         system_info.ip_address,
         system_info.mac_address,
