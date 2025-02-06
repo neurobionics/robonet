@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow};
-use log::{info, error, warn};
+use log::{info, warn, debug};
 use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
@@ -49,7 +49,6 @@ struct NetworkConnection {
 pub struct ConnectivityManager {
     config: NetworkConfig,
     last_ip: Option<String>,
-    consecutive_failures: u32,
 }
 
 impl ConnectivityManager {
@@ -57,52 +56,74 @@ impl ConnectivityManager {
         Self {
             config,
             last_ip: None,
-            consecutive_failures: 0,
         }
     }
 
     pub fn run(&mut self) -> Result<()> {
-        info!("Starting connectivity manager service");
-        
+        info!("Initializing connectivity monitoring");
+        let mut consecutive_failures = 0;
+        let mut first_run = true;
+
         loop {
-            match self.check_and_manage_connectivity() {
-                Ok(()) => {
-                    self.consecutive_failures = 0;
-                    thread::sleep(self.config.check_interval);
+            if first_run {
+                debug!("Performing initial connectivity check");
+                first_run = false;
+            }
+
+            match self.check_connectivity() {
+                Ok(_) => {
+                    if consecutive_failures > 0 {
+                        info!("Connectivity restored after {} failures", consecutive_failures);
+                    }
+                    consecutive_failures = 0;
+                    debug!("Connectivity check successful, sleeping for {} seconds", 
+                          self.config.check_interval.as_secs());
+                    std::thread::sleep(self.config.check_interval);
                 }
                 Err(e) => {
-                    error!("Connectivity check failed: {}", e);
-                    self.consecutive_failures += 1;
-                    
-                    if self.consecutive_failures >= self.config.max_retries {
-                        error!("Maximum retry attempts reached");
-                        return Err(anyhow!("Maximum retry attempts reached"));
+                    warn!("Connectivity check failed: {}", e);
+                    consecutive_failures += 1;
+
+                    if consecutive_failures >= self.config.max_retries {
+                        warn!("Maximum consecutive failures ({}) reached. Entering recovery mode...", 
+                              self.config.max_retries);
+                        // Wait for a longer period (e.g., 5 minutes) before retrying
+                        std::thread::sleep(Duration::from_secs(300));
+                        // Reset the counter to allow for new attempts
+                        consecutive_failures = 0;
+                    } else {
+                        debug!("Retry {}/{} in 30 seconds", 
+                               consecutive_failures, self.config.max_retries);
+                        std::thread::sleep(Duration::from_secs(30));
                     }
-                    
-                    // Exponential backoff
-                    let backoff = Duration::from_secs(2u64.pow(self.consecutive_failures));
-                    thread::sleep(backoff);
                 }
             }
         }
     }
 
-    fn check_and_manage_connectivity(&mut self) -> Result<()> {
+    fn check_connectivity(&mut self) -> Result<()> {
         if !self.check_internet_connectivity() {
-            info!("No internet connectivity, attempting to reconnect");
+            debug!("Internet connectivity check failed, attempting to reconnect");
             self.try_connect_networks()?;
         }
 
-        let current_ip = self.get_current_ip()?;
-        
-        // Send email if IP has changed or this is the first successful connection
-        if self.last_ip.as_ref() != Some(&current_ip) {
-            info!("IP address changed or initial connection");
-            self.last_ip = Some(current_ip);
-            self.send_ip_email()?;
+        match self.get_current_ip() {
+            Ok(current_ip) => {
+                // Only log and send email if IP has changed
+                if self.last_ip.as_ref() != Some(&current_ip) {
+                    info!("IP address changed from {} to {}", 
+                          self.last_ip.as_deref().unwrap_or("none"), 
+                          current_ip);
+                    self.last_ip = Some(current_ip);
+                    self.send_ip_email()?;
+                }
+                Ok(())
+            }
+            Err(e) => {
+                warn!("Failed to get current IP: {}", e);
+                Err(e)
+            }
         }
-
-        Ok(())
     }
 
     fn check_internet_connectivity(&self) -> bool {

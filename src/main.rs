@@ -1,17 +1,17 @@
-mod network_config;
+mod networking;
+mod connectivity;
+mod email;
+mod logging;
+mod service;
+mod utils;
 
 use clap::{Parser, Subcommand};
-use anyhow::{Context, Result, anyhow};
-use network_config::{NetworkMode, validate_args, generate_connection_file, write_connection_file, ensure_dnsmasq_config};
-use log::{info, error};
-mod connectivity;
-use std::collections::HashMap;
-use std::process::Command;
-mod email;
+use anyhow::{Context, Result};
+use networking::{NetworkMode, validate_args, generate_connection_file, write_connection_file, ensure_dnsmasq_config};
+use log::{info, error, debug};
 use email::{EmailConfig, send_network_status_email};
-
-// Add the template as a static string in the binary
-const SERVICE_TEMPLATE: &str = include_str!("services/robot-network-manager.service");
+use service::install_service;
+use utils::{check_root_privileges, set_environment_variable, get_env_var};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -93,166 +93,40 @@ enum Commands {
 
     /// Send network status email using configured settings
     SendStatusEmail,
-}
 
-fn check_root_privileges() -> Result<()> {
-    if !nix::unistd::Uid::effective().is_root() {
-        return Err(anyhow!("This program must be run with root privileges (sudo)"));
-    }
-    Ok(())
-}
-
-fn install_service(
-    email: Option<&str>,
-    smtp_server: Option<&str>,
-    smtp_user: Option<&str>,
-    smtp_password: Option<&str>,
-    check_interval: u64,
-    max_retries: u32,
-) -> Result<()> {
-    let email = email
-        .map(String::from)
-        .or_else(|| get_env_var("EMAIL_ADDRESS").ok())
-        .context("Email address not provided. Set EMAIL_ADDRESS environment variable or use --email flag")?;
-    
-    let smtp_server = smtp_server
-        .map(String::from)
-        .or_else(|| get_env_var("SMTP_SERVER").ok())
-        .context("SMTP server not provided. Set SMTP_SERVER environment variable or use --smtp-server flag")?;
-    
-    let smtp_user = smtp_user
-        .map(String::from)
-        .or_else(|| get_env_var("SMTP_USER").ok())
-        .context("SMTP username not provided. Set SMTP_USER environment variable or use --smtp-user flag")?;
-    
-    let smtp_password = smtp_password
-        .map(String::from)
-        .or_else(|| get_env_var("SMTP_PASSWORD").ok())
-        .context("SMTP password not provided. Set SMTP_PASSWORD environment variable or use --smtp-password flag")?;
-
-    // Test email configuration before installing service
-    let email_config = EmailConfig {
-        smtp_server: smtp_server.clone(),
-        smtp_user: smtp_user.clone(),
-        smtp_password: smtp_password.clone(),
-        recipient: email.clone(),
-    };
-
-    // Test email configuration
-    send_network_status_email(&email_config, false)?;
-
-    let executable_path = std::env::current_exe()
-        .context("Failed to get executable path")?;
-    
-    // Create a HashMap for template variables
-    let mut vars = HashMap::new();
-    vars.insert("EXECUTABLE_PATH", executable_path.display().to_string());
-    vars.insert("NOTIFICATION_EMAIL", email.to_string());
-    vars.insert("SMTP_SERVER", smtp_server.to_string());
-    vars.insert("SMTP_USER", smtp_user.to_string());
-    vars.insert("SMTP_PASSWORD", smtp_password.to_string());
-    vars.insert("CHECK_INTERVAL_SECS", check_interval.to_string());
-    vars.insert("MAX_RETRIES", max_retries.to_string());
-
-    // Replace template variables
-    let service_content = vars.iter().fold(SERVICE_TEMPLATE.to_string(), |content, (key, value)| {
-        content.replace(&format!("${{{}}}", key), value)
-    });
-
-    // Write service file
-    std::fs::write("/etc/systemd/system/robot-network-manager.service", service_content)
-        .context("Failed to write service file")?;
-
-    // Reload systemd daemon
-    let status = Command::new("systemctl")
-        .arg("daemon-reload")
-        .status()
-        .context("Failed to reload systemd daemon")?;
-
-    if !status.success() {
-        return Err(anyhow!("Failed to reload systemd daemon"));
-    }
-
-    // Enable service
-    let status = Command::new("systemctl")
-        .args(["enable", "robot-network-manager"])
-        .status()
-        .context("Failed to enable service")?;
-
-    if !status.success() {
-        return Err(anyhow!("Failed to enable service"));
-    }
-
-    // Start service
-    let status = Command::new("systemctl")
-        .args(["start", "robot-network-manager"])
-        .status()
-        .context("Failed to start service")?;
-
-    if !status.success() {
-        return Err(anyhow!("Failed to start service"));
-    }
-
-    println!("Service installed and started successfully!");
-    println!("To check service status: sudo systemctl status robot-network-manager");
-    println!("To view logs: sudo journalctl -u robot-network-manager -f");
-
-    Ok(())
-}
-
-fn set_environment_variable(name: &str, value: &str) -> Result<()> {
-    let env_file = "/etc/environment";
-    
-    // Read existing content
-    let content = std::fs::read_to_string(env_file)
-        .context("Failed to read /etc/environment")?;
-    
-    // Parse existing variables
-    let mut lines: Vec<String> = content.lines()
-        .filter(|line| !line.starts_with(&format!("{}=", name)))
-        .map(String::from)
-        .collect();
-    
-    // Add new variable
-    lines.push(format!("{}={}", name, value));
-    
-    // Write back to file
-    std::fs::write(env_file, lines.join("\n") + "\n")
-        .context("Failed to write to /etc/environment")?;
-    
-    println!("Environment variable '{}' set to '{}' successfully!", name, value);
-    println!("Note: You may need to log out and back in or reboot for changes to take effect.");
-    
-    Ok(())
-}
-
-fn get_env_var(name: &str) -> Result<String> {
-    // First try standard env var
-    if let Ok(value) = std::env::var(name) {
-        return Ok(value);
-    }
-
-    // If not found, try reading from /etc/environment
-    let content = std::fs::read_to_string("/etc/environment")
-        .context("Failed to read /etc/environment")?;
-    
-    for line in content.lines() {
-        if let Some((key, value)) = line.split_once('=') {
-            if key.trim() == name {
-                return Ok(value.trim().to_string());
-            }
-        }
-    }
-
-    Err(anyhow!("{} not found in environment or /etc/environment. Please run 'install-service' first to configure email settings", name))
+    /// View network manager log files
+    ViewLog {
+        /// Specific log file to view (optional)
+        #[arg(short = 'f', long = "file")]
+        file: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
-    // Initialize logging
-    env_logger::init();
+    logging::setup_logging()?;
     
-    check_root_privileges()?;
     let cli = Cli::parse();
+    
+    // Log which command is being executed
+    info!("Robot Network Manager executing: {}", match &cli.command {
+        Commands::AddNetwork { .. } => "add-network",
+        Commands::RunService => "run-service",
+        Commands::InstallService { .. } => "install-service",
+        Commands::SetEnv { .. } => "set-env",
+        Commands::SendStatusEmail => "send-status-email",
+        Commands::ViewLog { .. } => "view-log",
+    });
+
+    // Only check root privileges for commands that need them
+    match &cli.command {
+        Commands::AddNetwork { .. } |
+        Commands::InstallService { .. } |
+        Commands::SetEnv { .. } => {
+            debug!("Checking root privileges");
+            check_root_privileges()?;
+        }
+        _ => {}  // Other commands don't need root
+    }
 
     match &cli.command {
         Commands::AddNetwork { mode, name, password, priority, ip, user_id } => {
@@ -287,11 +161,15 @@ fn main() -> Result<()> {
         }
         
         Commands::RunService => {
-            info!("Starting connectivity service");
+            info!("Starting connectivity monitoring service");
+            
             let config = connectivity::NetworkConfig::from_env()
                 .context("Failed to load configuration")?;
             
             let mut manager = connectivity::ConnectivityManager::new(config);
+            
+            // Only log startup once for the service
+            info!("Connectivity monitoring active");
             
             if let Err(e) = manager.run() {
                 error!("Service error: {}", e);
@@ -337,6 +215,47 @@ fn main() -> Result<()> {
 
             send_network_status_email(&email_config, true)?;
             println!("Network status email sent successfully!");
+        }
+
+        Commands::ViewLog { file } => {
+            let base_name = file.as_deref().unwrap_or("main");
+            
+            // List all files in the log directory
+            let entries = std::fs::read_dir(logging::LOG_DIR)
+                .context("Failed to read log directory")?;
+            
+            // Find the most recent matching log file
+            let latest_log = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with(base_name)
+                })
+                .max_by_key(|e| e.metadata().unwrap().modified().unwrap());
+
+            match latest_log {
+                Some(log_entry) => {
+                    let log_path = log_entry.path();
+                    // Read and display the log file
+                    let content = std::fs::read_to_string(&log_path)
+                        .with_context(|| format!("Failed to read log file: {}", log_path.display()))?;
+                    
+                    println!("=== {} ===", log_path.display());
+                    println!("{}", content);
+                }
+                None => {
+                    println!("Available log files:");
+                    if let Ok(entries) = std::fs::read_dir(logging::LOG_DIR) {
+                        for entry in entries {
+                            if let Ok(entry) = entry {
+                                println!("  {}", entry.file_name().to_string_lossy());
+                            }
+                        }
+                    }
+                    return Err(anyhow::anyhow!("No matching log file found for: {}", base_name));
+                }
+            }
         }
     }
 
