@@ -6,6 +6,7 @@ use lettre::{
 };
 use std::process::Command;
 use uuid::Uuid;
+use std::fs;
 
 pub struct EmailConfig {
     pub smtp_server: String,
@@ -30,64 +31,26 @@ impl SystemInfo {
             .to_string_lossy()
             .to_string();
 
-        // Get IP address (both wlan0 and eth0)
-        let mut ip_addresses = Vec::new();
-        
-        // Try wlan0
-        if let Ok(output) = Command::new("ip")
+        // Get IP address (wlan0 only)
+        let ip_address = Command::new("ip")
             .args(["addr", "show", "wlan0"])
-            .output() {
-            let output = String::from_utf8_lossy(&output.stdout);
-            if let Some(ip) = output
-                .lines()
-                .find(|line| line.contains("inet "))
-                .and_then(|line| line.split_whitespace().nth(1))
-                .map(|ip| ip.split('/').next().unwrap_or("").to_string()) {
-                if !ip.is_empty() {
-                    ip_addresses.push(format!("WiFi (wlan0): {}", ip));
-                }
-            }
-        }
-        
-        // Try eth0
-        if let Ok(output) = Command::new("ip")
-            .args(["addr", "show", "eth0"])
-            .output() {
-            let output = String::from_utf8_lossy(&output.stdout);
-            if let Some(ip) = output
-                .lines()
-                .find(|line| line.contains("inet "))
-                .and_then(|line| line.split_whitespace().nth(1))
-                .map(|ip| ip.split('/').next().unwrap_or("").to_string()) {
-                if !ip.is_empty() {
-                    ip_addresses.push(format!("Ethernet (eth0): {}", ip));
-                }
-            }
-        }
+            .output()
+            .ok()
+            .and_then(|output| {
+                let output = String::from_utf8_lossy(&output.stdout);
+                output
+                    .lines()
+                    .find(|line| line.contains("inet "))
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .map(|ip| ip.split('/').next().unwrap_or("").to_string())
+            })
+            .filter(|ip| !ip.is_empty())
+            .unwrap_or_else(|| "No IP address found".to_string());
 
-        let ip_address = if ip_addresses.is_empty() {
-            "No IP addresses found".to_string()
-        } else {
-            ip_addresses.join("\n")
-        };
-
-        // Get MAC address for both interfaces
-        let mut mac_addresses = Vec::new();
-        
-        for interface in &["wlan0", "eth0"] {
-            if let Ok(mac) = std::fs::read_to_string(format!("/sys/class/net/{}/address", interface)) {
-                let mac = mac.trim();
-                if !mac.is_empty() {
-                    mac_addresses.push(format!("{}: {}", interface, mac));
-                }
-            }
-        }
-
-        let mac_address = if mac_addresses.is_empty() {
-            "No MAC addresses found".to_string()
-        } else {
-            mac_addresses.join("\n")
-        };
+        // Get MAC address for wlan0 only
+        let mac_address = std::fs::read_to_string("/sys/class/net/wlan0/address")
+            .map(|mac| mac.trim().to_string())
+            .unwrap_or_else(|_| "No MAC address found".to_string());
 
         // Get SSID if connected to WiFi
         let ssid = Command::new("iwgetid")
@@ -113,78 +76,43 @@ impl SystemInfo {
     }
 }
 
-pub fn send_network_status_email(config: &EmailConfig, ip_changed: bool) -> Result<()> {
+#[derive(Debug)]
+pub enum LoginTicketReason {
+    InitialLogin,
+    IpChanged,
+    ManualCheck,
+}
+
+pub fn send_login_ticket(config: &EmailConfig, reason: LoginTicketReason) -> Result<()> {
     let system_info = SystemInfo::collect()?;
     
-    let status_type = if ip_changed {
-        "IP Address Change Report"
-    } else {
-        "Initial Connection Report"
+    let status_type = match reason {
+        LoginTicketReason::InitialLogin => "New Login",
+        LoginTicketReason::IpChanged => "IP Address Change Alert",
+        LoginTicketReason::ManualCheck => "Manual Execution",
     };
-    
-    let html_content = format!(
-        r#"<!DOCTYPE html>
-        <html dir="ltr" lang="en">
-            <head>
-                <meta content="text/html; charset=UTF-8" http-equiv="Content-Type" />
-            </head>
-            <body style="background-color:rgb(0,0,0);margin:auto;font-family:system-ui;padding:1rem">
-                <table align="center" width="100%" style="max-width:700px;border:1px solid rgb(82,82,91);border-radius:0.375rem;margin:40px auto;padding:20px">
-                    <tbody>
-                        <tr style="width:100%">
-                            <td>
-                                <h1 style="font-weight:400;text-align:center;border-radius:0.375rem;padding:1rem;margin:0 0 12px;border:1px solid rgb(82,82,91)">
-                                    <p style="font-size:14px;line-height:28px;margin:16px 0;color:rgb(205,205,205);text-align:center;margin-bottom:12px">
-                                        <strong style="color:rgb(255,255,255);font-size:32px">Raspberry Pi Network Status</strong><br />
-                                        {}</p>
-                                </h1>
-                                <table align="center" width="100%" style="border-radius:0.375rem;padding:1rem;margin:auto;border:1px solid rgb(82,82,91)">
-                                    <tbody style="color:rgb(255,255,255)">
-                                        <tr>
-                                            <td style="padding:10px">Hostname:</td>
-                                            <td style="padding:10px">{}</td>
-                                        </tr>
-                                        <tr>
-                                            <td style="padding:10px">IP Addresses:</td>
-                                            <td style="padding:10px;color:rgb(165,243,252);white-space:pre-line">{}</td>
-                                        </tr>
-                                        <tr>
-                                            <td style="padding:10px">MAC Addresses:</td>
-                                            <td style="padding:10px;white-space:pre-line">{}</td>
-                                        </tr>
-                                        <tr>
-                                            <td style="padding:10px">WiFi Network:</td>
-                                            <td style="padding:10px">{}</td>
-                                        </tr>
-                                        <tr>
-                                            <td style="padding:10px">Session ID:</td>
-                                            <td style="padding:10px">{}</td>
-                                        </tr>
-                                        <tr>
-                                            <td style="padding:10px">Timestamp:</td>
-                                            <td style="padding:10px">{}</td>
-                                        </tr>
-                                    </tbody>
-                                </table>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
-            </body>
-        </html>"#,
-        status_type,
-        system_info.hostname,
-        system_info.ip_address,
-        system_info.mac_address,
-        system_info.ssid,
-        system_info.session_id,
-        system_info.timestamp,
-    );
+
+    // Read the template file
+    let template = fs::read_to_string("src/templates/emails/login_ticket.html")
+        .context("Failed to read email template")?;
+
+    let html_content = template
+        .replace("{STATUS_TYPE}", status_type)
+        .replace("{HOSTNAME}", &system_info.hostname)
+        .replace("{IP_ADDRESS}", &system_info.ip_address)
+        .replace("{MAC_ADDRESS}", &system_info.mac_address)
+        .replace("{SSID}", &system_info.ssid)
+        .replace("{SESSION_ID}", &system_info.session_id)
+        .replace("{TIMESTAMP}", &system_info.timestamp);
 
     let email = Message::builder()
         .from("Raspberry Pi <raspberry.pi@localhost>".parse()?)
         .to(config.recipient.parse::<Mailbox>()?)
-        .subject(format!("Raspberry Pi Network Status - {}", system_info.hostname))
+        .subject(format!(
+            "Login Ticket for {} - {}", 
+            system_info.hostname,
+            system_info.timestamp.split_whitespace().next().unwrap_or("")
+        ))
         .multipart(
             MultiPart::alternative()
                 .singlepart(

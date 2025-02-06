@@ -2,10 +2,10 @@ use anyhow::{Context, Result, anyhow};
 use log::{info, debug};
 use std::collections::HashMap;
 use std::process::Command;
-use crate::email::{EmailConfig, send_network_status_email};
+use crate::email::{EmailConfig, send_login_ticket, LoginTicketReason};
 use crate::utils::get_env_var;
 
-pub const SERVICE_TEMPLATE: &str = include_str!("services/robot-network-manager.service");
+pub const SERVICE_TEMPLATE: &str = include_str!("templates/services/robot-network-manager.service");
 
 pub fn install_service(
     email: Option<&str>,
@@ -48,7 +48,7 @@ pub fn install_service(
     };
 
     info!("Testing email configuration");
-    send_network_status_email(&email_config, false)?;
+    send_login_ticket(&email_config, LoginTicketReason::InitialLogin)?;
 
     let executable_path = std::env::current_exe()
         .context("Failed to get executable path")?;

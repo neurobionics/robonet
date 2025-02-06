@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
-use crate::email::{EmailConfig, send_network_status_email};
+use crate::email::{EmailConfig, send_login_ticket, LoginTicketReason};
 
 pub struct NetworkConfig {
     pub notification_email: String,
@@ -240,6 +240,10 @@ impl ConnectivityManager {
         };
 
         let ip_changed = self.last_ip.is_some();
-        send_network_status_email(&email_config, ip_changed)
+        send_login_ticket(&email_config, if ip_changed {
+            LoginTicketReason::IpChanged
+        } else {
+            LoginTicketReason::InitialLogin
+        })
     }
 }

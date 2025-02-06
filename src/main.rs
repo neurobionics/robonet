@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use anyhow::{Context, Result};
 use networking::{NetworkMode, validate_args, generate_connection_file, write_connection_file, ensure_dnsmasq_config};
 use log::{info, error, debug};
-use email::{EmailConfig, send_network_status_email};
+use email::{EmailConfig, send_login_ticket, LoginTicketReason};
 use service::install_service;
 use utils::{check_root_privileges, set_environment_variable, get_env_var};
 
@@ -91,8 +91,9 @@ enum Commands {
         value: String,
     },
 
-    /// Send network status email using configured settings
-    SendStatusEmail,
+    /// Send login ticket email using configured settings
+    #[command(name = "send-login-ticket")]
+    SendLoginTicket,
 
     /// View network manager log files
     ViewLog {
@@ -113,7 +114,7 @@ fn main() -> Result<()> {
         Commands::RunService => "run-service",
         Commands::InstallService { .. } => "install-service",
         Commands::SetEnv { .. } => "set-env",
-        Commands::SendStatusEmail => "send-status-email",
+        Commands::SendLoginTicket => "send-login-ticket",
         Commands::ViewLog { .. } => "view-log",
     });
 
@@ -199,7 +200,7 @@ fn main() -> Result<()> {
             set_environment_variable(name, value)?;
         }
 
-        Commands::SendStatusEmail => {
+        Commands::SendLoginTicket => {
             // Try to load email configuration from environment variables or /etc/environment
             let email = get_env_var("EMAIL_ADDRESS")?;
             let smtp_server = get_env_var("SMTP_SERVER")?;
@@ -213,8 +214,8 @@ fn main() -> Result<()> {
                 recipient: email,
             };
 
-            send_network_status_email(&email_config, true)?;
-            println!("Network status email sent successfully!");
+            send_login_ticket(&email_config, LoginTicketReason::ManualCheck)?;
+            println!("Login ticket email sent successfully!");
         }
 
         Commands::ViewLog { file } => {

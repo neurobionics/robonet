@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="en">
+    <head>
+        <meta content="text/html; charset=UTF-8" http-equiv="Content-Type" />
+    </head>
+    <body style="background-color:rgb(0,0,0);margin:auto;font-family:system-ui;padding:1rem">
+        <table align="center" width="100%" style="max-width:700px;border:1px solid rgb(82,82,91);border-radius:0.375rem;margin:40px auto;padding:20px">
+            <tbody>
+                <tr style="width:100%">
+                    <td>
+                        <h1 style="font-weight:400;text-align:center;border-radius:0.375rem;padding:1rem;margin:0 0 12px;border:1px solid rgb(82,82,91)">
+                            <p style="font-size:14px;line-height:28px;margin:16px 0;color:rgb(205,205,205);text-align:center;margin-bottom:12px">
+                                <strong style="color:rgb(255,255,255);font-size:32px">Raspberry Pi Login Ticket</strong><br />
+                                {STATUS_TYPE}</p>
+                        </h1>
+                        <table align="center" width="100%" style="border-radius:0.375rem;padding:1rem;margin:auto;border:1px solid rgb(82,82,91)">
+                            <tbody style="color:rgb(255,255,255)">
+                                <tr>
+                                    <td style="padding:10px">Hostname:</td>
+                                    <td style="padding:10px">{HOSTNAME}</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding:10px">IP Address:</td>
+                                    <td style="padding:10px;color:rgb(165,243,252)">{IP_ADDRESS}</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding:10px">MAC Address:</td>
+                                    <td style="padding:10px">{MAC_ADDRESS}</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding:10px">WiFi Network:</td>
+                                    <td style="padding:10px">{SSID}</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding:10px">Session ID:</td>
+                                    <td style="padding:10px">{SESSION_ID}</td>
+                                </tr>
+                                <tr>
+                                    <td style="padding:10px">Timestamp:</td>
+                                    <td style="padding:10px">{TIMESTAMP}</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </body>
+</html>

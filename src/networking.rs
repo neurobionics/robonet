@@ -46,9 +46,9 @@ pub fn validate_args(mode: &NetworkMode, ip: &Option<String>, user_id: &Option<S
 
 pub fn generate_connection_file(mode: &NetworkMode, name: &str, password: &str, priority: &str, ip: &Option<String>, user_id: &Option<String>) -> Result<String> {
     let template_path = match mode {
-        NetworkMode::AP => "src/connections/ap.nmconnection",
-        NetworkMode::WPA => "src/connections/wpa.nmconnection",
-        NetworkMode::WPAEAP => "src/connections/wpaeap.nmconnection",
+        NetworkMode::AP => "src/templates/connections/ap.nmconnection",
+        NetworkMode::WPA => "src/templates/connections/wpa.nmconnection",
+        NetworkMode::WPAEAP => "src/templates/connections/wpaeap.nmconnection",
     };
 
     let template = fs::read_to_string(template_path)
