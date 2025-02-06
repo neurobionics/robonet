@@ -1,5 +1,5 @@
 [Unit]
-Description=Robot Network Manager
+Description=Robotnet Monitor
 After=network.target
 
 [Service]

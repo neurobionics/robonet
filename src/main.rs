@@ -53,8 +53,9 @@ enum Commands {
     #[command(name = "run-service")]
     RunService,
 
-    /// Install systemd service
-    InstallService {
+    /// Install systemd service and configure email settings
+    #[command(name = "install")]
+    Install {
         /// Email address for notifications (or set EMAIL_ADDRESS env var)
         #[arg(long)]
         email: Option<String>,
@@ -78,6 +79,13 @@ enum Commands {
         /// Maximum number of retries (default: 3)
         #[arg(long, default_value = "3")]
         max_retries: u32,
+    },
+
+    /// Uninstall robonet package or its monitoring service
+    Uninstall {
+        /// What to uninstall: 'service' for monitoring service only, or empty for full package
+        #[arg(short = 't', long = "target")]
+        target: Option<String>,
     },
 
     /// Set system-wide environment variable
@@ -112,7 +120,8 @@ fn main() -> Result<()> {
     info!("Robot Network Manager executing: {}", match &cli.command {
         Commands::AddNetwork { .. } => "add-network",
         Commands::RunService => "run-service",
-        Commands::InstallService { .. } => "install-service",
+        Commands::Install { .. } => "install",
+        Commands::Uninstall { .. } => "uninstall",
         Commands::SetEnv { .. } => "set-env",
         Commands::SendLoginTicket => "send-login-ticket",
         Commands::ViewLog { .. } => "view-log",
@@ -121,7 +130,8 @@ fn main() -> Result<()> {
     // Only check root privileges for commands that need them
     match &cli.command {
         Commands::AddNetwork { .. } |
-        Commands::InstallService { .. } |
+        Commands::Install { .. } |
+        Commands::Uninstall { .. } |
         Commands::SetEnv { .. } => {
             debug!("Checking root privileges");
             check_root_privileges()?;
@@ -178,7 +188,7 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::InstallService { 
+        Commands::Install { 
             email, 
             smtp_server, 
             smtp_user, 
@@ -194,6 +204,38 @@ fn main() -> Result<()> {
                 *check_interval,
                 *max_retries,
             )?;
+        }
+
+        Commands::Uninstall { target } => {
+            match target.as_deref() {
+                Some("service") => {
+                    println!("Are you sure you want to uninstall the robonet-monitor.service? [y/N]");
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+                    if input.trim().eq_ignore_ascii_case("y") {
+                        service::uninstall_service()?;
+                        println!("Service uninstalled successfully");
+                    } else {
+                        println!("Uninstall cancelled");
+                    }
+                }
+                None => {
+                    println!("Are you sure you want to uninstall the entire robonet package? [y/N]");
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+                    if input.trim().eq_ignore_ascii_case("y") {
+                        // First uninstall the service if it exists
+                        let _ = service::uninstall_service();
+                        // TODO: Add package uninstallation logic here
+                        println!("Package uninstallation not yet implemented");
+                    } else {
+                        println!("Uninstall cancelled");
+                    }
+                }
+                Some(invalid) => {
+                    return Err(anyhow::anyhow!("Invalid uninstall target: '{}'. Use 'service' or leave empty for full package uninstall", invalid));
+                }
+            }
         }
 
         Commands::SetEnv { name, value } => {

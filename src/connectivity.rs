@@ -114,8 +114,14 @@ impl ConnectivityManager {
                     info!("IP address changed from {} to {}", 
                           self.last_ip.as_deref().unwrap_or("none"), 
                           current_ip);
-                    self.last_ip = Some(current_ip);
-                    self.send_ip_email()?;
+                    self.last_ip = Some(current_ip.clone());
+                    
+                    debug!("Sending IP change notification email");
+                    if let Err(e) = self.send_ip_email() {
+                        warn!("Failed to send IP notification email: {}", e);
+                        return Err(e);
+                    }
+                    info!("Successfully sent IP notification email");
                 }
                 Ok(())
             }

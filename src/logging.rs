@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use tracing_subscriber::EnvFilter;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 
-pub const LOG_DIR: &str = "/var/log/robot-nm";
+pub const LOG_DIR: &str = "/var/log/robonet";
 
 pub fn setup_logging() -> Result<()> {
     // Create log directory if it doesn't exist

@@ -1,4 +1,4 @@
-# robot-nm
+# robonet
 A networking tool designed to streamline remote development for robotic systems.
 
 # Prerequisites

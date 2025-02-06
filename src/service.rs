@@ -5,7 +5,7 @@ use std::process::Command;
 use crate::email::{EmailConfig, send_login_ticket, LoginTicketReason};
 use crate::utils::get_env_var;
 
-pub const SERVICE_TEMPLATE: &str = include_str!("templates/services/robot-network-manager.service");
+pub const SERVICE_TEMPLATE: &str = include_str!("templates/services/robonet-monitor.service");
 
 pub fn install_service(
     email: Option<&str>,
@@ -68,8 +68,8 @@ pub fn install_service(
         content.replace(&format!("${{{}}}", key), value)
     });
 
-    debug!("Writing service file to /etc/systemd/system/robot-network-manager.service");
-    std::fs::write("/etc/systemd/system/robot-network-manager.service", service_content)
+    debug!("Writing service file to /etc/systemd/system/robonet-monitor.service");
+    std::fs::write("/etc/systemd/system/robonet-monitor.service", service_content)
         .context("Failed to write service file")?;
 
     // Reload systemd daemon
@@ -84,7 +84,7 @@ pub fn install_service(
 
     // Enable service
     let status = Command::new("systemctl")
-        .args(["enable", "robot-network-manager"])
+        .args(["enable", "robonet-monitor"])
         .status()
         .context("Failed to enable service")?;
 
@@ -94,7 +94,7 @@ pub fn install_service(
 
     // Start service
     let status = Command::new("systemctl")
-        .args(["start", "robot-network-manager"])
+        .args(["start", "robonet-monitor"])
         .status()
         .context("Failed to start service")?;
 
@@ -103,8 +103,46 @@ pub fn install_service(
     }
 
     println!("Service installed and started successfully!");
-    println!("To check service status: sudo systemctl status robot-network-manager");
-    println!("To view logs: sudo journalctl -u robot-network-manager -f");
+    println!("To check service status: sudo systemctl status robonet-monitor");
+    println!("To view logs: sudo journalctl -u robonet-monitor -f");
+
+    Ok(())
+}
+
+pub fn uninstall_service() -> Result<()> {
+    use std::process::Command;
+    use anyhow::Context;
+    use log::info;
+
+    info!("Uninstalling network manager service");
+
+    // Stop the service if it's running
+    let _ = Command::new("systemctl")
+        .args(["stop", "robonet-monitor.service"])
+        .output()
+        .context("Failed to stop service")?;
+
+    // Disable the service
+    Command::new("systemctl")
+        .args(["disable", "robonet-monitor.service"])
+        .output()
+        .context("Failed to disable service")?;
+
+    // Remove the service file
+    let service_path = "/etc/systemd/system/robonet-monitor.service";
+    if std::path::Path::new(service_path).exists() {
+        std::fs::remove_file(service_path)
+            .context("Failed to remove service file")?;
+    }
+
+    // Reload systemd daemon
+    Command::new("systemctl")
+        .arg("daemon-reload")
+        .output()
+        .context("Failed to reload systemd daemon")?;
+
+    info!("Network manager service uninstalled successfully");
+    println!("Network manager service has been uninstalled");
 
     Ok(())
 } 
