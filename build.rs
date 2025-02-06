@@ -11,5 +11,5 @@ fn main() {
     fs::create_dir_all(&services_dir).unwrap();
     
     // Copy the service template
-    println!("cargo:rerun-if-changed=src/services/rpi-connectivity-manager.service");
+    println!("cargo:rerun-if-changed=src/services/robot-network-manager.service");
 } 

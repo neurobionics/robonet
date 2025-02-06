@@ -7,9 +7,11 @@ use log::{info, error};
 mod connectivity;
 use std::collections::HashMap;
 use std::process::Command;
+mod email;
+use email::{EmailConfig, send_status_email};
 
 // Add the template as a static string in the binary
-const SERVICE_TEMPLATE: &str = include_str!("services/rpi-connectivity-manager.service");
+const SERVICE_TEMPLATE: &str = include_str!("services/robot-network-manager.service");
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -48,25 +50,26 @@ enum Commands {
     },
     
     /// Run as a connectivity monitoring service
+    #[command(name = "run-service")]
     RunService,
 
     /// Install systemd service
     InstallService {
-        /// Email address for notifications
+        /// Email address for notifications (or set EMAIL_ADDRESS env var)
         #[arg(long)]
-        email: String,
+        email: Option<String>,
         
-        /// SMTP server address
+        /// SMTP server address (or set SMTP_SERVER env var)
         #[arg(long)]
-        smtp_server: String,
+        smtp_server: Option<String>,
         
-        /// SMTP username
+        /// SMTP username (or set SMTP_USER env var)
         #[arg(long)]
-        smtp_user: String,
+        smtp_user: Option<String>,
         
-        /// SMTP password
+        /// SMTP password (or set SMTP_PASSWORD env var)
         #[arg(long)]
-        smtp_password: String,
+        smtp_password: Option<String>,
         
         /// Check interval in seconds (default: 300)
         #[arg(long, default_value = "300")]
@@ -75,6 +78,17 @@ enum Commands {
         /// Maximum number of retries (default: 3)
         #[arg(long, default_value = "3")]
         max_retries: u32,
+    },
+
+    /// Set system-wide environment variable
+    SetEnv {
+        /// Name of the environment variable
+        #[arg(short = 'n', long = "name")]
+        name: String,
+
+        /// Value of the environment variable
+        #[arg(short = 'v', long = "value")]
+        value: String,
     },
 }
 
@@ -86,13 +100,44 @@ fn check_root_privileges() -> Result<()> {
 }
 
 fn install_service(
-    email: &str,
-    smtp_server: &str,
-    smtp_user: &str,
-    smtp_password: &str,
+    email: Option<&str>,
+    smtp_server: Option<&str>,
+    smtp_user: Option<&str>,
+    smtp_password: Option<&str>,
     check_interval: u64,
     max_retries: u32,
 ) -> Result<()> {
+    let email = email
+        .map(String::from)
+        .or_else(|| std::env::var("EMAIL_ADDRESS").ok())
+        .context("Email address not provided. Set EMAIL_ADDRESS environment variable or use --email flag")?;
+    
+    let smtp_server = smtp_server
+        .map(String::from)
+        .or_else(|| std::env::var("SMTP_SERVER").ok())
+        .context("SMTP server not provided. Set SMTP_SERVER environment variable or use --smtp-server flag")?;
+    
+    let smtp_user = smtp_user
+        .map(String::from)
+        .or_else(|| std::env::var("SMTP_USER").ok())
+        .context("SMTP username not provided. Set SMTP_USER environment variable or use --smtp-user flag")?;
+    
+    let smtp_password = smtp_password
+        .map(String::from)
+        .or_else(|| std::env::var("SMTP_PASSWORD").ok())
+        .context("SMTP password not provided. Set SMTP_PASSWORD environment variable or use --smtp-password flag")?;
+
+    // Test email configuration before installing service
+    let email_config = EmailConfig {
+        smtp_server: smtp_server.clone(),
+        smtp_user: smtp_user.clone(),
+        smtp_password: smtp_password.clone(),
+        recipient: email.clone(),
+    };
+
+    // Test email configuration
+    send_status_email(&email_config)?;
+
     let executable_path = std::env::current_exe()
         .context("Failed to get executable path")?;
     
@@ -112,7 +157,7 @@ fn install_service(
     });
 
     // Write service file
-    std::fs::write("/etc/systemd/system/raspberry-wifi-manager.service", service_content)
+    std::fs::write("/etc/systemd/system/robot-network-manager.service", service_content)
         .context("Failed to write service file")?;
 
     // Reload systemd daemon
@@ -127,7 +172,7 @@ fn install_service(
 
     // Enable service
     let status = Command::new("systemctl")
-        .args(["enable", "raspberry-wifi-manager"])
+        .args(["enable", "robot-network-manager"])
         .status()
         .context("Failed to enable service")?;
 
@@ -137,7 +182,7 @@ fn install_service(
 
     // Start service
     let status = Command::new("systemctl")
-        .args(["start", "raspberry-wifi-manager"])
+        .args(["start", "robot-network-manager"])
         .status()
         .context("Failed to start service")?;
 
@@ -146,9 +191,35 @@ fn install_service(
     }
 
     println!("Service installed and started successfully!");
-    println!("To check service status: sudo systemctl status raspberry-wifi-manager");
-    println!("To view logs: sudo journalctl -u raspberry-wifi-manager -f");
+    println!("To check service status: sudo systemctl status robot-network-manager");
+    println!("To view logs: sudo journalctl -u robot-network-manager -f");
 
+    Ok(())
+}
+
+fn set_environment_variable(name: &str, value: &str) -> Result<()> {
+    let env_file = "/etc/environment";
+    
+    // Read existing content
+    let content = std::fs::read_to_string(env_file)
+        .context("Failed to read /etc/environment")?;
+    
+    // Parse existing variables
+    let mut lines: Vec<String> = content.lines()
+        .filter(|line| !line.starts_with(&format!("{}=", name)))
+        .map(String::from)
+        .collect();
+    
+    // Add new variable
+    lines.push(format!("{}={}", name, value));
+    
+    // Write back to file
+    std::fs::write(env_file, lines.join("\n") + "\n")
+        .context("Failed to write to /etc/environment")?;
+    
+    println!("Environment variable '{}' set to '{}' successfully!", name, value);
+    println!("Note: You may need to log out and back in or reboot for changes to take effect.");
+    
     Ok(())
 }
 
@@ -213,13 +284,17 @@ fn main() -> Result<()> {
             max_retries 
         } => {
             install_service(
-                email,
-                smtp_server,
-                smtp_user,
-                smtp_password,
+                email.as_deref(),
+                smtp_server.as_deref(),
+                smtp_user.as_deref(),
+                smtp_password.as_deref(),
                 *check_interval,
                 *max_retries,
             )?;
+        }
+
+        Commands::SetEnv { name, value } => {
+            set_environment_variable(name, value)?;
         }
     }
 

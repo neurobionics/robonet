@@ -1,10 +1,10 @@
 [Unit]
-Description=RPi Connectivity Manager
+Description=Robot Network Manager
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=${EXECUTABLE_PATH} RunService
+ExecStart=${EXECUTABLE_PATH} run-service
 Environment=RUST_LOG=info
 Environment=NOTIFICATION_EMAIL=${NOTIFICATION_EMAIL}
 Environment=SMTP_SERVER=${SMTP_SERVER}
