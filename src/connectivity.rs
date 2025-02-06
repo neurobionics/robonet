@@ -1,10 +1,12 @@
 use anyhow::{Context, Result, anyhow};
-use log::{info, warn, debug};
+use log::{info, warn, debug, error};
 use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
 use crate::email::{EmailConfig, send_login_ticket, LoginTicketReason};
+use crate::logging;
+use crate::logging::ErrorCode;
 
 pub struct NetworkConfig {
     pub notification_email: String,
@@ -103,7 +105,8 @@ impl ConnectivityManager {
 
     fn check_connectivity(&mut self) -> Result<()> {
         if !self.check_internet_connectivity() {
-            debug!("Internet connectivity check failed, attempting to reconnect");
+            error!("{} Internet connectivity check failed", 
+                logging::error_code(ErrorCode::NetworkConnectFailed));
             self.try_connect_networks()?;
         }
 
@@ -174,9 +177,12 @@ impl ConnectivityManager {
                         info!("Successfully connected to network: {}", network.name);
                         return Ok(());
                     }
+                    error!("{} Failed to establish internet connectivity on network: {}", 
+                        logging::error_code(ErrorCode::NetworkConnectFailed), network.name);
                 }
                 Err(e) => {
-                    warn!("Failed to connect to network {}: {}", network.name, e);
+                    error!("{} Failed to connect to network {}: {}", 
+                        logging::error_code(ErrorCode::NetworkConnectFailed), network.name, e);
                     continue;
                 }
             }

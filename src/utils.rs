@@ -1,8 +1,13 @@
 use anyhow::{Context, Result, anyhow};
 use nix;
+use log::error;
+use crate::logging;
+use crate::logging::ErrorCode;
 
 pub fn check_root_privileges() -> Result<()> {
     if !nix::unistd::Uid::effective().is_root() {
+        error!("{} Root privileges required",
+            logging::error_code(ErrorCode::PermissionDenied));
         return Err(anyhow!("This program must be run with root privileges (sudo)"));
     }
     Ok(())
@@ -13,7 +18,8 @@ pub fn set_environment_variable(name: &str, value: &str) -> Result<()> {
     
     // Read existing content
     let content = std::fs::read_to_string(env_file)
-        .context("Failed to read /etc/environment")?;
+        .with_context(|| format!("{} Failed to read environment file",
+            logging::error_code(ErrorCode::EnvVarError)))?;
     
     // Parse existing variables
     let mut lines: Vec<String> = content.lines()
@@ -26,7 +32,8 @@ pub fn set_environment_variable(name: &str, value: &str) -> Result<()> {
     
     // Write back to file
     std::fs::write(env_file, lines.join("\n") + "\n")
-        .context("Failed to write to /etc/environment")?;
+        .with_context(|| format!("{} Failed to write environment file",
+            logging::error_code(ErrorCode::EnvVarError)))?;
     
     println!("Environment variable '{}' set to '{}' successfully!", name, value);
     println!("Note: You may need to log out and back in or reboot for changes to take effect.");

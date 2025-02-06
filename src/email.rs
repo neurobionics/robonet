@@ -6,6 +6,7 @@ use lettre::{
 };
 use std::process::Command;
 use uuid::Uuid;
+use crate::logging;
 
 pub struct EmailConfig {
     pub smtp_server: String,
@@ -26,7 +27,8 @@ pub struct SystemInfo {
 impl SystemInfo {
     pub fn collect() -> Result<Self> {
         let hostname = hostname::get()
-            .context("Failed to get hostname")?
+            .with_context(|| format!("{} Failed to get hostname",
+                logging::error_code(logging::ErrorCode::FileSystemError)))?
             .to_string_lossy()
             .to_string();
 
@@ -83,7 +85,9 @@ pub enum LoginTicketReason {
 }
 
 pub fn send_login_ticket(config: &EmailConfig, reason: LoginTicketReason) -> Result<()> {
-    let system_info = SystemInfo::collect()?;
+    let system_info = SystemInfo::collect()
+        .with_context(|| format!("{} Failed to collect system information",
+            logging::error_code(logging::ErrorCode::EmailTemplateFailed)))?;
     
     let status_type = match reason {
         LoginTicketReason::InitialLogin => "New Login",
@@ -130,7 +134,8 @@ pub fn send_login_ticket(config: &EmailConfig, reason: LoginTicketReason) -> Res
         .build();
 
     mailer.send(&email)
-        .context("Failed to send email")?;
+        .with_context(|| format!("{} Failed to send email",
+            logging::error_code(logging::ErrorCode::EmailSendFailed)))?;
 
     Ok(())
 } 

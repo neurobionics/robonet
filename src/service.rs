@@ -1,9 +1,11 @@
 use anyhow::{Context, Result, anyhow};
-use log::{info, debug};
+use log::{info, debug, error};
 use std::collections::HashMap;
 use std::process::Command;
 use crate::email::{EmailConfig, send_login_ticket, LoginTicketReason};
 use crate::utils::get_env_var;
+use crate::logging;
+use crate::logging::ErrorCode;
 
 pub const SERVICE_TEMPLATE: &str = include_str!("templates/services/robonet-monitor.service");
 
@@ -76,9 +78,12 @@ pub fn install_service(
     let status = Command::new("systemctl")
         .arg("daemon-reload")
         .status()
-        .context("Failed to reload systemd daemon")?;
+        .with_context(|| format!("{} Failed to reload systemd daemon",
+            logging::error_code(ErrorCode::ServiceInstallFailed)))?;
 
     if !status.success() {
+        error!("{} Failed to reload systemd daemon",
+            logging::error_code(ErrorCode::ServiceInstallFailed));
         return Err(anyhow!("Failed to reload systemd daemon"));
     }
 
@@ -126,7 +131,8 @@ pub fn uninstall_service() -> Result<()> {
     Command::new("systemctl")
         .args(["disable", "robonet-monitor.service"])
         .output()
-        .context("Failed to disable service")?;
+        .with_context(|| format!("{} Failed to disable service",
+            logging::error_code(ErrorCode::ServiceUninstallFailed)))?;
 
     // Remove the service file
     let service_path = "/etc/systemd/system/robonet-monitor.service";

@@ -12,6 +12,7 @@ use log::{info, error, debug};
 use email::{EmailConfig, send_login_ticket, LoginTicketReason};
 use service::install_service;
 use utils::{check_root_privileges, set_environment_variable, get_env_var};
+use logging::ErrorCode;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -116,16 +117,18 @@ fn main() -> Result<()> {
     
     let cli = Cli::parse();
     
-    // Log which command is being executed
-    info!("Robot Network Manager executing: {}", match &cli.command {
-        Commands::AddNetwork { .. } => "add-network",
-        Commands::RunService => "run-service",
-        Commands::Install { .. } => "install",
-        Commands::Uninstall { .. } => "uninstall",
-        Commands::SetEnv { .. } => "set-env",
-        Commands::SendLoginTicket => "send-login-ticket",
-        Commands::ViewLog { .. } => "view-log",
-    });
+    // Log which command is being executed (without error code since it's not an error)
+    info!("Robot Network Manager executing: {}", 
+        match &cli.command {
+            Commands::AddNetwork { .. } => "add-network",
+            Commands::RunService => "run-service",
+            Commands::Install { .. } => "install",
+            Commands::Uninstall { .. } => "uninstall",
+            Commands::SetEnv { .. } => "set-env",
+            Commands::SendLoginTicket => "send-login-ticket",
+            Commands::ViewLog { .. } => "view-log",
+        }
+    );
 
     // Only check root privileges for commands that need them
     match &cli.command {
@@ -133,24 +136,33 @@ fn main() -> Result<()> {
         Commands::Install { .. } |
         Commands::Uninstall { .. } |
         Commands::SetEnv { .. } => {
-            debug!("Checking root privileges");
-            check_root_privileges()?;
+            debug!("Checking root privileges");  // Removed error code from debug message
+            check_root_privileges()
+                .with_context(|| format!("{} Permission denied", 
+                    logging::error_code(ErrorCode::PermissionDenied)))?;  // Keep error code for actual errors
         }
         _ => {}  // Other commands don't need root
     }
 
     match &cli.command {
         Commands::AddNetwork { mode, name, password, priority, ip, user_id } => {
-            validate_args(mode, ip, user_id)?;
+            validate_args(mode, ip, user_id)
+                .with_context(|| format!("{} Invalid network configuration", 
+                    logging::error_code(ErrorCode::NetworkConfigInvalid)))?;
 
             // If AP mode, ensure dnsmasq is configured
             if matches!(mode, NetworkMode::AP) {
                 ensure_dnsmasq_config()
-                    .with_context(|| "Failed to configure dnsmasq for AP mode")?;
+                    .with_context(|| format!("{} Failed to configure dnsmasq for AP mode", 
+                        logging::error_code(ErrorCode::DnsmasqConfigFailed)))?;
             }
 
-            let content = generate_connection_file(mode, name, password, priority, ip, user_id)?;
-            write_connection_file(name, &content)?;
+            let content = generate_connection_file(mode, name, password, priority, ip, user_id)
+                .with_context(|| format!("{} Failed to generate connection file", 
+                    logging::error_code(ErrorCode::ConnectionFileFailed)))?;
+            write_connection_file(name, &content)
+                .with_context(|| format!("{} Failed to write connection file", 
+                    logging::error_code(ErrorCode::ConnectionFileFailed)))?;
 
             match mode {
                 NetworkMode::AP => {
@@ -172,10 +184,12 @@ fn main() -> Result<()> {
         }
         
         Commands::RunService => {
-            info!("Starting connectivity monitoring service");
+            info!("{} Starting connectivity monitoring service", 
+                logging::error_code(ErrorCode::UnexpectedError));
             
             let config = connectivity::NetworkConfig::from_env()
-                .context("Failed to load configuration")?;
+                .with_context(|| format!("{} Failed to load configuration", 
+                    logging::error_code(ErrorCode::ServiceConfigError)))?;
             
             let mut manager = connectivity::ConnectivityManager::new(config);
             
@@ -243,11 +257,19 @@ fn main() -> Result<()> {
         }
 
         Commands::SendLoginTicket => {
-            // Try to load email configuration from environment variables or /etc/environment
-            let email = get_env_var("EMAIL_ADDRESS")?;
-            let smtp_server = get_env_var("SMTP_SERVER")?;
-            let smtp_user = get_env_var("SMTP_USER")?;
-            let smtp_password = get_env_var("SMTP_PASSWORD")?;
+            // Try to load email configuration from environment variables
+            let email = get_env_var("EMAIL_ADDRESS")
+                .with_context(|| format!("{} EMAIL_ADDRESS not configured", 
+                    logging::error_code(ErrorCode::EmailConfigMissing)))?;
+            let smtp_server = get_env_var("SMTP_SERVER")
+                .with_context(|| format!("{} SMTP_SERVER not configured", 
+                    logging::error_code(ErrorCode::EmailConfigMissing)))?;
+            let smtp_user = get_env_var("SMTP_USER")
+                .with_context(|| format!("{} SMTP_USER not configured", 
+                    logging::error_code(ErrorCode::EmailConfigMissing)))?;
+            let smtp_password = get_env_var("SMTP_PASSWORD")
+                .with_context(|| format!("{} SMTP_PASSWORD not configured", 
+                    logging::error_code(ErrorCode::EmailConfigMissing)))?;
 
             let email_config = EmailConfig {
                 smtp_server,
@@ -256,7 +278,10 @@ fn main() -> Result<()> {
                 recipient: email,
             };
 
-            send_login_ticket(&email_config, LoginTicketReason::ManualCheck)?;
+            send_login_ticket(&email_config, LoginTicketReason::ManualCheck)
+                .with_context(|| format!("{} Failed to send login ticket", 
+                    logging::error_code(ErrorCode::EmailSendFailed)))?;
+            
             println!("Login ticket email sent successfully!");
         }
 
