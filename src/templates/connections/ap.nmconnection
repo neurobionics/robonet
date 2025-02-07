@@ -17,7 +17,7 @@ psk={AP_PSK}
 
 [ipv4]
 address1={AP_IP_ADDRESS}/24
-method=manual
+method=shared
 
 [ipv6]
 addr-gen-mode=default
