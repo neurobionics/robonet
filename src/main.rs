@@ -74,7 +74,7 @@ enum Commands {
         smtp_password: Option<String>,
         
         /// Check interval in seconds (default: 300)
-        #[arg(long, default_value = "300")]
+        #[arg(long, default_value = "180")]
         check_interval: u64,
         
         /// Maximum number of retries (default: 3)
@@ -110,6 +110,22 @@ enum Commands {
         #[arg(short = 'f', long = "file")]
         file: Option<String>,
     },
+
+    /// Run network connection tests
+    #[command(name = "test-connections")]
+    TestConnections {
+        /// Maximum number of test cycles to run
+        #[arg(short = 'n', long = "max-trials", default_value = "10")]
+        max_trials: u32,
+
+        /// Restart interval in seconds
+        #[arg(short = 'i', long = "interval", default_value = "60")]
+        interval: u64,
+
+        /// Output file for test results
+        #[arg(short = 'o', long = "output", default_value = "network_test_results.csv")]
+        output_file: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -127,6 +143,7 @@ fn main() -> Result<()> {
             Commands::SetEnv { .. } => "set-env",
             Commands::SendLoginTicket => "send-login-ticket",
             Commands::ViewLog { .. } => "view-log",
+            Commands::TestConnections { .. } => "test-connections",
         }
     );
 
@@ -324,6 +341,90 @@ fn main() -> Result<()> {
                     return Err(anyhow::anyhow!("No matching log file found for: {}", base_name));
                 }
             }
+        }
+
+        Commands::TestConnections { max_trials, interval, output_file } => {
+            use std::{thread, time::Duration, fs::OpenOptions, io::Write};
+            use chrono::Local;
+            use connectivity::NetworkInfo;
+
+            println!("Starting network connection tests:");
+            println!("Max trials: {}", max_trials);
+            println!("Restart interval: {} seconds", interval);
+            println!("Output file: {}", output_file);
+
+            // Create or open output file with headers
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(output_file)
+                .with_context(|| "Failed to open output file")?;
+
+            // Write CSV headers if file is empty
+            if file.metadata()?.len() == 0 {
+                writeln!(file, "timestamp,trial,ssid,bssid,ip_address,signal_strength,connection_time_ms")?;
+            }
+
+            for trial in 1..=*max_trials {
+                println!("\nTrial {} of {}", trial, max_trials);
+                
+                // Restart NetworkManager
+                std::process::Command::new("systemctl")
+                    .args(["restart", "NetworkManager"])
+                    .status()
+                    .with_context(|| "Failed to restart NetworkManager")?;
+
+                let start_time = std::time::Instant::now();
+                
+                // Wait for connection and collect network info
+                thread::sleep(Duration::from_secs(10)); // Initial wait for service to start
+                
+                if let Ok(network_info) = NetworkInfo::get_current_connection() {
+                    let connection_time = start_time.elapsed().as_millis();
+                    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                    
+                    // Get all the values once at the start
+                    let ssid = network_info.ssid.as_deref().unwrap_or_default();
+                    let bssid = network_info.bssid.as_deref().unwrap_or_default();
+                    let ip = network_info.ip_address.as_deref().unwrap_or_default();
+                    let signal = network_info.signal_strength.as_deref().unwrap_or_default();
+                    
+                    // Write to CSV file
+                    writeln!(
+                        file,
+                        "{},{},{},{},{},{},{}",
+                        timestamp,
+                        trial,
+                        ssid,
+                        bssid,
+                        ip,
+                        signal,
+                        connection_time
+                    )?;
+
+                    println!("Connected to: {}", ssid);
+                    println!("BSSID: {}", bssid);
+                    println!("IP: {}", ip);
+                    println!("Signal: {}", signal);
+                    println!("Connection time: {}ms", connection_time);
+                } else {
+                    println!("Failed to get network information");
+                    writeln!(
+                        file,
+                        "{},{},NO_CONNECTION,,,,-1",
+                        Local::now().format("%Y-%m-%d %H:%M:%S"),
+                        trial
+                    )?;
+                }
+
+                // Wait for the remainder of the interval
+                let elapsed = start_time.elapsed().as_secs();
+                if elapsed < *interval {
+                    thread::sleep(Duration::from_secs(interval - elapsed));
+                }
+            }
+
+            println!("\nTest completed. Results saved to: {}", output_file);
         }
     }
 

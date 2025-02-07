@@ -259,3 +259,55 @@ impl ConnectivityManager {
         })
     }
 }
+
+#[derive(Debug)]
+pub struct NetworkInfo {
+    pub ssid: Option<String>,
+    pub bssid: Option<String>,
+    pub ip_address: Option<String>,
+    pub signal_strength: Option<String>,
+}
+
+impl NetworkInfo {
+    pub fn get_current_connection() -> Result<Self> {
+        // Get SSID and BSSID using nmcli
+        let output = std::process::Command::new("nmcli")
+            .args(["-t", "-f", "SSID,BSSID,SIGNAL", "device", "wifi", "list"])
+            .output()?;
+        
+        let wifi_info = String::from_utf8_lossy(&output.stdout);
+        let connected_line = wifi_info.lines()
+            .find(|line| line.contains("*"));
+        
+        // Get IP address
+        let ip_output = std::process::Command::new("ip")
+            .args(["addr", "show"])
+            .output()?;
+        
+        let ip_info = String::from_utf8_lossy(&ip_output.stdout);
+        let ip_address = ip_info.lines()
+            .find(|line| line.contains("inet ") && !line.contains("127.0.0.1"))
+            .and_then(|line| {
+                line.split_whitespace()
+                    .nth(1)
+                    .map(|s| s.split('/').next().unwrap_or("").to_string())
+            });
+
+        if let Some(line) = connected_line {
+            let parts: Vec<&str> = line.split(':').collect();
+            Ok(NetworkInfo {
+                ssid: parts.get(0).map(|s| s.to_string()),
+                bssid: parts.get(1).map(|s| s.to_string()),
+                signal_strength: parts.get(2).map(|s| s.to_string()),
+                ip_address,
+            })
+        } else {
+            Ok(NetworkInfo {
+                ssid: None,
+                bssid: None,
+                signal_strength: None,
+                ip_address: None,
+            })
+        }
+    }
+}
