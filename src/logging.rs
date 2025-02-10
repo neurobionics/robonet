@@ -19,6 +19,7 @@ pub enum ErrorCode {
     DnsmasqConfigFailed = NETWORK_ERROR_BASE + 1,
     ConnectionFileFailed = NETWORK_ERROR_BASE + 2,
     NetworkConnectFailed = NETWORK_ERROR_BASE + 3,
+    NetworkScanFailed = NETWORK_ERROR_BASE + 4,
     
     // Service related (2000-2999)
     ServiceConfigError = SERVICE_ERROR_BASE,

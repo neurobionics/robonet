@@ -13,6 +13,8 @@ use email::{EmailConfig, send_login_ticket, LoginTicketReason};
 use service::install_service;
 use utils::{check_root_privileges, set_environment_variable, get_env_var};
 use logging::ErrorCode;
+use chrono::Local;
+use connectivity::NetworkInfo;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -122,6 +124,26 @@ enum Commands {
         #[arg(short = 'i', long = "interval", default_value = "10")]
         interval: u64,
     },
+
+    /// Map nearby WiFi networks
+    #[command(name = "map-networks")]
+    MapNetworks {
+        /// Scan interval in seconds
+        #[arg(short = 'i', long = "interval", default_value = "5")]
+        interval: u64,
+
+        /// Total duration to run in seconds
+        #[arg(short = 't', long = "time", default_value = "300")]
+        duration: u64,
+
+        /// Maximum number of networks to log per scan (default: 10)
+        #[arg(short = 'n', long = "networks", default_value = "10")]
+        max_networks: usize,
+
+        /// Filter by SSID (optional)
+        #[arg(short = 's', long = "ssid")]
+        ssid_filter: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -140,6 +162,7 @@ fn main() -> Result<()> {
             Commands::SendLoginTicket => "send-login-ticket",
             Commands::ViewLog { .. } => "view-log",
             Commands::TestConnections { .. } => "test-connections",
+            Commands::MapNetworks { .. } => "map-networks",
         }
     );
 
@@ -416,6 +439,28 @@ fn main() -> Result<()> {
             }
 
             println!("\nTest completed. Results saved to: {}", filename);
+        }
+
+        Commands::MapNetworks { interval, duration, max_networks, ssid_filter } => {
+            let timestamp = Local::now().format("%Y%m%d_%H%M%S");
+            let filename = format!("network_map_{}{}.csv", 
+                ssid_filter.as_ref().map(|s| format!("_{}", s)).unwrap_or_default(),
+                timestamp);
+            
+            println!("Starting network mapping:");
+            println!("Scan interval: {} seconds", interval);
+            println!("Total duration: {} seconds", duration);
+            println!("Networks per scan: {}", max_networks);
+            if let Some(ssid) = &ssid_filter {
+                println!("Filtering for SSID: {}", ssid);
+            }
+            println!("Output file: {}", filename);
+
+            NetworkInfo::map_networks(*interval, *duration, *max_networks, &filename, ssid_filter.as_deref())
+                .with_context(|| format!("{} Network mapping failed", 
+                    logging::error_code(ErrorCode::NetworkScanFailed)))?;
+
+            println!("\nMapping completed. Results saved to: {}", filename);
         }
     }
 

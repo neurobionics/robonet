@@ -354,4 +354,113 @@ impl NetworkInfo {
             })
         }
     }
+
+    pub fn scan_networks() -> Result<Vec<NetworkInfo>> {
+        let output = Command::new("nmcli")
+            .args(["-f", "SSID,BSSID,SIGNAL,CHAN,FREQ,RATE,MODE", "device", "wifi", "list"])
+            .output()
+            .context("Failed to execute nmcli command")?;
+
+        let wifi_info = String::from_utf8_lossy(&output.stdout);
+        let mut networks = Vec::new();
+
+        // Skip the header line
+        for line in wifi_info.lines().skip(1) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 7 {
+                networks.push(NetworkInfo {
+                    ssid: Some(parts[0].to_string()),
+                    bssid: Some(parts[1].to_string()),
+                    signal_strength: Some(parts[2].to_string()),
+                    channel: Some(parts[3].to_string()),
+                    frequency: Some(parts[4].to_string()),
+                    rate: Some(parts[5].to_string()),
+                    mode: Some(parts[6].to_string()),
+                    ip_address: None, // Not relevant for network scanning
+                });
+            }
+        }
+
+        Ok(networks)
+    }
+
+    pub fn map_networks(
+        interval: u64,
+        duration: u64,
+        max_networks: usize,
+        output_file: &str,
+        ssid_filter: Option<&str>,
+    ) -> Result<()> {
+        use std::{thread, time::Duration, fs::OpenOptions, io::Write};
+        use chrono::Local;
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(output_file)
+            .context("Failed to create output file")?;
+
+        // Write CSV headers
+        writeln!(file, "timestamp,ssid,bssid,signal_strength,channel,frequency,rate,mode")?;
+
+        let start_time = std::time::Instant::now();
+        
+        while start_time.elapsed().as_secs() < duration {
+            let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            
+            match Self::scan_networks() {
+                Ok(networks) => {
+                    // Filter networks if SSID filter is provided
+                    let filtered_networks: Vec<_> = if let Some(ssid) = ssid_filter {
+                        networks.into_iter()
+                            .filter(|n| n.ssid.as_ref().map(|s| s == ssid).unwrap_or(false))
+                            .collect()
+                    } else {
+                        networks
+                    };
+
+                    // Sort by signal strength
+                    let mut networks = filtered_networks;
+                    networks.sort_by(|a, b| {
+                        let a_signal = a.signal_strength.as_ref()
+                            .and_then(|s| s.parse::<i32>().ok())
+                            .unwrap_or(-100);
+                        let b_signal = b.signal_strength.as_ref()
+                            .and_then(|s| s.parse::<i32>().ok())
+                            .unwrap_or(-100);
+                        b_signal.cmp(&a_signal)
+                    });
+
+                    // Log top networks
+                    for network in networks.iter().take(max_networks) {
+                        writeln!(
+                            file,
+                            "{},{},{},{},{},{},{},{}",
+                            timestamp,
+                            network.ssid.as_deref().unwrap_or(""),
+                            network.bssid.as_deref().unwrap_or(""),
+                            network.signal_strength.as_deref().unwrap_or(""),
+                            network.channel.as_deref().unwrap_or(""),
+                            network.frequency.as_deref().unwrap_or(""),
+                            network.rate.as_deref().unwrap_or(""),
+                            network.mode.as_deref().unwrap_or("")
+                        )?;
+                    }
+
+                    info!("Scan completed at {}: {} networks found{}", 
+                        timestamp, 
+                        networks.len().min(max_networks),
+                        ssid_filter.map(|s| format!(" for SSID '{}'", s))
+                            .unwrap_or_default());
+                }
+                Err(e) => {
+                    warn!("Failed to scan networks at {}: {}", timestamp, e);
+                }
+            }
+
+            thread::sleep(Duration::from_secs(interval));
+        }
+
+        Ok(())
+    }
 }
