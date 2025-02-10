@@ -264,49 +264,93 @@ impl ConnectivityManager {
 pub struct NetworkInfo {
     pub ssid: Option<String>,
     pub bssid: Option<String>,
-    pub ip_address: Option<String>,
     pub signal_strength: Option<String>,
+    pub ip_address: Option<String>,
+    pub channel: Option<String>,
+    pub frequency: Option<String>,
+    pub rate: Option<String>,
+    pub mode: Option<String>,
 }
 
 impl NetworkInfo {
     pub fn get_current_connection() -> Result<Self> {
-        // Get SSID and BSSID using nmcli
-        let output = std::process::Command::new("nmcli")
-            .args(["-t", "-f", "SSID,BSSID,SIGNAL", "device", "wifi", "list"])
+        // Get wifi connection details with a single command
+        let wifi_output = std::process::Command::new("nmcli")
+            .args(["-f", "IN-USE,SSID,BSSID,SIGNAL,CHAN,FREQ,RATE,MODE", "device", "wifi"])
             .output()?;
         
-        let wifi_info = String::from_utf8_lossy(&output.stdout);
-        let connected_line = wifi_info.lines()
-            .find(|line| line.contains("*"));
-        
-        // Get IP address
+        let wifi_info = String::from_utf8_lossy(&wifi_output.stdout);
+        let connection_info = wifi_info.lines()
+            .skip(1)  // Skip the header line
+            .find(|line| line.starts_with("*"))  // Find the line with * indicating active connection
+            .map(|line| {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                
+                // Extract numeric values from frequency and rate
+                let freq = parts.iter()
+                    .position(|&x| x == "MHz")
+                    .and_then(|i| i.checked_sub(1))
+                    .and_then(|i| parts.get(i))
+                    .map(|&s| s.to_string());
+                
+                let rate = parts.iter()
+                    .position(|&x| x == "Mbit/s")
+                    .and_then(|i| i.checked_sub(1))
+                    .and_then(|i| parts.get(i))
+                    .map(|&s| s.to_string());
+                
+                let mode_index = parts.iter()
+                    .position(|&x| x == "Mbit/s")
+                    .map(|i| i + 1)
+                    .and_then(|i| parts.get(i))
+                    .map(|&s| s.to_string());
+
+                (
+                    parts.get(1).map(|&s| s.to_string()),     // SSID
+                    parts.get(2).map(|&s| s.to_string()),     // BSSID
+                    parts.get(3).map(|&s| s.to_string()),     // Signal
+                    parts.get(4).map(|&s| s.to_string()),     // Channel
+                    freq,                                      // Frequency (numeric only)
+                    rate,                                      // Rate (numeric only)
+                    mode_index,                                // Mode
+                )
+            });
+
+        // Get IP address (keeping this part as it's working)
         let ip_output = std::process::Command::new("ip")
-            .args(["addr", "show"])
+            .args(["addr", "show", "wlan0"])
             .output()?;
         
         let ip_info = String::from_utf8_lossy(&ip_output.stdout);
         let ip_address = ip_info.lines()
-            .find(|line| line.contains("inet ") && !line.contains("127.0.0.1"))
+            .find(|line| line.contains("inet ") && !line.contains("inet6"))
             .and_then(|line| {
                 line.split_whitespace()
                     .nth(1)
                     .map(|s| s.split('/').next().unwrap_or("").to_string())
             });
 
-        if let Some(line) = connected_line {
-            let parts: Vec<&str> = line.split(':').collect();
+        if let Some((ssid, bssid, signal, chan, freq, rate, mode)) = connection_info {
             Ok(NetworkInfo {
-                ssid: parts.get(0).map(|s| s.to_string()),
-                bssid: parts.get(1).map(|s| s.to_string()),
-                signal_strength: parts.get(2).map(|s| s.to_string()),
+                ssid,
+                bssid,
+                signal_strength: signal,
                 ip_address,
+                channel: chan,
+                frequency: freq,
+                rate,
+                mode,
             })
         } else {
             Ok(NetworkInfo {
                 ssid: None,
                 bssid: None,
                 signal_strength: None,
-                ip_address: None,
+                ip_address,
+                channel: None,
+                frequency: None,
+                rate: None,
+                mode: None,
             })
         }
     }

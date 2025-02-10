@@ -115,16 +115,12 @@ enum Commands {
     #[command(name = "test-connections")]
     TestConnections {
         /// Maximum number of test cycles to run
-        #[arg(short = 'n', long = "max-trials", default_value = "10")]
+        #[arg(short = 'n', long = "max-trials", default_value = "2")]
         max_trials: u32,
 
         /// Restart interval in seconds
-        #[arg(short = 'i', long = "interval", default_value = "60")]
+        #[arg(short = 'i', long = "interval", default_value = "10")]
         interval: u64,
-
-        /// Output file for test results
-        #[arg(short = 'o', long = "output", default_value = "network_test_results.csv")]
-        output_file: String,
     },
 }
 
@@ -343,27 +339,28 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::TestConnections { max_trials, interval, output_file } => {
+        Commands::TestConnections { max_trials, interval} => {
             use std::{thread, time::Duration, fs::OpenOptions, io::Write};
             use chrono::Local;
             use connectivity::NetworkInfo;
 
+            // Generate a timestamp-based filename
+            let timestamp = Local::now().format("%Y%m%d_%H%M%S");
+            let filename = format!("test_connections_{}.csv", timestamp);
             println!("Starting network connection tests:");
             println!("Max trials: {}", max_trials);
             println!("Restart interval: {} seconds", interval);
-            println!("Output file: {}", output_file);
+            println!("Output file: {}", filename);
 
-            // Create or open output file with headers
+            // Create new file with headers
             let mut file = OpenOptions::new()
                 .create(true)
-                .append(true)
-                .open(output_file)
-                .with_context(|| "Failed to open output file")?;
+                .write(true)
+                .open(&filename)
+                .with_context(|| format!("Failed to create output file: {}", filename))?;
 
-            // Write CSV headers if file is empty
-            if file.metadata()?.len() == 0 {
-                writeln!(file, "timestamp,trial,ssid,bssid,ip_address,signal_strength,connection_time_ms")?;
-            }
+            // Write CSV headers
+            writeln!(file, "timestamp,trial,ssid,bssid,ip_address,signal_strength,channel,frequency,rate,mode,connection_time_ms")?;
 
             for trial in 1..=*max_trials {
                 println!("\nTrial {} of {}", trial, max_trials);
@@ -383,35 +380,29 @@ fn main() -> Result<()> {
                     let connection_time = start_time.elapsed().as_millis();
                     let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
                     
-                    // Get all the values once at the start
-                    let ssid = network_info.ssid.as_deref().unwrap_or_default();
-                    let bssid = network_info.bssid.as_deref().unwrap_or_default();
-                    let ip = network_info.ip_address.as_deref().unwrap_or_default();
-                    let signal = network_info.signal_strength.as_deref().unwrap_or_default();
-                    
                     // Write to CSV file
                     writeln!(
                         file,
-                        "{},{},{},{},{},{},{}",
+                        "{},{},{},{},{},{},{},{},{},{},{}",
                         timestamp,
                         trial,
-                        ssid,
-                        bssid,
-                        ip,
-                        signal,
+                        network_info.ssid.unwrap_or_default(),
+                        network_info.bssid.unwrap_or_default(),
+                        network_info.ip_address.unwrap_or_default(),
+                        network_info.signal_strength.unwrap_or_default(),
+                        network_info.channel.unwrap_or_default(),
+                        network_info.frequency.unwrap_or_default(),
+                        network_info.rate.unwrap_or_default(),
+                        network_info.mode.unwrap_or_default(),
                         connection_time
                     )?;
 
-                    println!("Connected to: {}", ssid);
-                    println!("BSSID: {}", bssid);
-                    println!("IP: {}", ip);
-                    println!("Signal: {}", signal);
                     println!("Connection time: {}ms", connection_time);
                 } else {
                     println!("Failed to get network information");
                     writeln!(
                         file,
-                        "{},{},NO_CONNECTION,,,,-1",
+                        "{},{},NO_CONNECTION,,,,,,,,,-1",
                         Local::now().format("%Y-%m-%d %H:%M:%S"),
                         trial
                     )?;
@@ -424,7 +415,7 @@ fn main() -> Result<()> {
                 }
             }
 
-            println!("\nTest completed. Results saved to: {}", output_file);
+            println!("\nTest completed. Results saved to: {}", filename);
         }
     }
 
