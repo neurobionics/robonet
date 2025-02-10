@@ -117,11 +117,11 @@ enum Commands {
     #[command(name = "test-connections")]
     TestConnections {
         /// Maximum number of test cycles to run
-        #[arg(short = 'n', long = "max-trials", default_value = "2")]
+        #[arg(short = 'n', long = "max-trials", default_value = "50")]
         max_trials: u32,
 
         /// Restart interval in seconds
-        #[arg(short = 'i', long = "interval", default_value = "10")]
+        #[arg(short = 'i', long = "interval", default_value = "15")]
         interval: u64,
     },
 

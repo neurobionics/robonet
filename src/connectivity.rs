@@ -89,8 +89,8 @@ impl ConnectivityManager {
                     if consecutive_failures >= self.config.max_retries {
                         warn!("Maximum consecutive failures ({}) reached. Entering recovery mode...", 
                               self.config.max_retries);
-                        // Wait for a longer period (e.g., 5 minutes) before retrying
-                        std::thread::sleep(Duration::from_secs(300));
+                        // Wait for a longer period (e.g., 500 seconds) before retrying
+                        std::thread::sleep(Duration::from_secs(500));
                         // Reset the counter to allow for new attempts
                         consecutive_failures = 0;
                     } else {
