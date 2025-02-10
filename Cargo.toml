@@ -2,6 +2,11 @@
 name = "robonet"
 version = "0.1.0"
 edition = "2021"
+license = "Apache 2.0"
+license-file = "LICENSE"
+homepage = "https://github.com/neurobionics/robonet"
+repository = "https://github.com/neurobionics/robonet"
+authors = ["Senthur Ayyappan <senthura@umich.edu>"]
 
 [dependencies]
 anyhow = "1.0.95"
