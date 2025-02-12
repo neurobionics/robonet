@@ -8,7 +8,7 @@ mod utils;
 use clap::{Parser, Subcommand};
 use anyhow::{Context, Result};
 use networking::{NetworkMode, validate_args, generate_connection_file, write_connection_file, ensure_dnsmasq_config};
-use log::{info, error, debug};
+use log::{info, error};
 use email::{EmailConfig, send_login_ticket, LoginTicketReason};
 use service::install_service;
 use utils::{check_root_privileges, set_environment_variable, get_env_var};
@@ -165,9 +165,23 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
-    logging::setup_logging()?;
-    
     let cli = Cli::parse();
+    
+    // Check root privileges first for commands that need them
+    match &cli.command {
+        Commands::AddNetwork { .. } |
+        Commands::Install { .. } |
+        Commands::Uninstall { .. } |
+        Commands::SetEnv { .. } => {
+            check_root_privileges()
+                .with_context(|| format!("{} Permission denied", 
+                    logging::error_code(ErrorCode::PermissionDenied)))?;
+        }
+        _ => {}
+    }
+
+    // Set up logging after privilege check
+    logging::setup_logging()?;
     
     info!("Robot Network Manager executing: {}", 
         match &cli.command {
@@ -182,20 +196,6 @@ fn main() -> Result<()> {
             Commands::MapNetworks { .. } => "map-networks",
         }
     );
-
-    // Only check root privileges for commands that need them
-    match &cli.command {
-        Commands::AddNetwork { .. } |
-        Commands::Install { .. } |
-        Commands::Uninstall { .. } |
-        Commands::SetEnv { .. } => {
-            debug!("Checking root privileges");
-            check_root_privileges()
-                .with_context(|| format!("{} Permission denied", 
-                    logging::error_code(ErrorCode::PermissionDenied)))?
-        }
-        _ => {}
-    }
 
     match &cli.command {
         Commands::AddNetwork { mode, name, password, priority, ip, user_id } => {
