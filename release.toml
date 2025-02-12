@@ -1,0 +1,12 @@
+sign-commit = false
+sign-tag = false
+publish = true
+push = true
+pre-release-commit-message = "chore: release version {{version}}"
+tag-message = "release: {{version}}"
+tag-prefix = "v"
+
+pre-release-hook = [
+    ["cargo", "deb"],
+    ["git", "cliff", "--latest", "--output", "CHANGELOG.md"]
+] 

@@ -32,6 +32,7 @@ jobs:
     - name: Install tools
       run: |
         cargo install cargo-release
+        cargo install cargo-deb
         cargo install git-cliff
 
     - name: Setup Cargo authentication
@@ -51,7 +52,6 @@ jobs:
         
     - name: Build Debian package
       run: |
-        cargo install cargo-deb
         cargo deb
 
     - name: Create Release
