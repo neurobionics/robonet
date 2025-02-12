@@ -32,33 +32,33 @@ impl SystemInfo {
             .to_string_lossy()
             .to_string();
 
-        // Get IP address (wlan0 only)
+        // Get IP address (improved to handle errors)
         let ip_address = Command::new("ip")
             .args(["addr", "show", "wlan0"])
             .output()
-            .ok()
-            .and_then(|output| {
-                let output = String::from_utf8_lossy(&output.stdout);
-                output
-                    .lines()
-                    .find(|line| line.contains("inet "))
-                    .and_then(|line| line.split_whitespace().nth(1))
-                    .map(|ip| ip.split('/').next().unwrap_or("").to_string())
-            })
-            .filter(|ip| !ip.is_empty())
+            .with_context(|| "Failed to execute ip command")?
+            .stdout;
+        let ip_address = String::from_utf8_lossy(&ip_address)
+            .lines()
+            .find(|line| line.contains("inet "))
+            .and_then(|line| line.split_whitespace().nth(1))
+            .map(|ip| ip.split('/').next().unwrap_or("").to_string())
             .unwrap_or_else(|| "No IP address found".to_string());
 
-        // Get MAC address for wlan0 only
+        // Get MAC address with proper error handling
         let mac_address = std::fs::read_to_string("/sys/class/net/wlan0/address")
-            .map(|mac| mac.trim().to_string())
-            .unwrap_or_else(|_| "No MAC address found".to_string());
+            .with_context(|| "Failed to read MAC address")?
+            .trim()
+            .to_string();
 
-        // Get SSID if connected to WiFi
+        // Get SSID with proper error handling
         let ssid = Command::new("iwgetid")
             .arg("-r")
             .output()
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-            .unwrap_or_else(|_| "Not connected to WiFi".to_string());
+            .with_context(|| "Failed to get SSID")?;
+        let ssid = String::from_utf8_lossy(&ssid.stdout)
+            .trim()
+            .to_string();
 
         // Generate session ID
         let session_id = Uuid::new_v4().to_string();
@@ -108,10 +108,10 @@ pub fn send_login_ticket(config: &EmailConfig, reason: LoginTicketReason) -> Res
         .replace("{TIMESTAMP}", &system_info.timestamp);
 
     let email = Message::builder()
-        .from("Raspberry Pi <raspberry.pi@localhost>".parse()?)
+        .from(format!("Raspberry Pi <{}>", config.smtp_user).parse()?)
         .to(config.recipient.parse::<Mailbox>()?)
         .subject(format!(
-            "Login Ticket for {} - {}", 
+            "Login Ticket for {} - {}",
             system_info.hostname,
             system_info.timestamp.split_whitespace().next().unwrap_or("")
         ))
@@ -131,6 +131,9 @@ pub fn send_login_ticket(config: &EmailConfig, reason: LoginTicketReason) -> Res
 
     let mailer = SmtpTransport::relay(&config.smtp_server)?
         .credentials(creds)
+        .tls(lettre::transport::smtp::client::Tls::Required(
+            lettre::transport::smtp::client::TlsParameters::new(config.smtp_server.clone())?
+        ))
         .build();
 
     mailer.send(&email)

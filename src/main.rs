@@ -15,6 +15,24 @@ use utils::{check_root_privileges, set_environment_variable, get_env_var};
 use logging::ErrorCode;
 use chrono::Local;
 use connectivity::NetworkInfo;
+use regex::Regex;
+use lazy_static::lazy_static;
+
+// Add these constants near the top of the file
+const MAX_CHECK_INTERVAL: u64 = 300; // 5 minutes
+const MIN_CHECK_INTERVAL: u64 = 30; // 30 seconds
+const MAX_RETRIES: u32 = 10;
+const MAX_LOG_SIZE: u64 = 50 * 1024 * 1024; // 50MB
+const NETWORK_TIMEOUT: u64 = 30; // 30 seconds
+
+lazy_static! {
+    static ref EMAIL_REGEX: Regex = Regex::new(
+        r"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$"
+    ).unwrap();
+    static ref IP_REGEX: Regex = Regex::new(
+        r"^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$"
+    ).unwrap();
+}
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -114,8 +132,8 @@ enum Commands {
     },
 
     /// Run network connection tests
-    #[command(name = "test-connections")]
-    TestConnections {
+    #[command(name = "test-connectivity")]
+    TestConnectivity {
         /// Maximum number of test cycles to run
         #[arg(short = 'n', long = "max-trials", default_value = "50")]
         max_trials: u32,
@@ -151,7 +169,6 @@ fn main() -> Result<()> {
     
     let cli = Cli::parse();
     
-    // Log which command is being executed (without error code since it's not an error)
     info!("Robot Network Manager executing: {}", 
         match &cli.command {
             Commands::AddNetwork { .. } => "add-network",
@@ -161,7 +178,7 @@ fn main() -> Result<()> {
             Commands::SetEnv { .. } => "set-env",
             Commands::SendLoginTicket => "send-login-ticket",
             Commands::ViewLog { .. } => "view-log",
-            Commands::TestConnections { .. } => "test-connections",
+            Commands::TestConnectivity { .. } => "test-connectivity",
             Commands::MapNetworks { .. } => "map-networks",
         }
     );
@@ -172,16 +189,35 @@ fn main() -> Result<()> {
         Commands::Install { .. } |
         Commands::Uninstall { .. } |
         Commands::SetEnv { .. } => {
-            debug!("Checking root privileges");  // Removed error code from debug message
+            debug!("Checking root privileges");
             check_root_privileges()
                 .with_context(|| format!("{} Permission denied", 
-                    logging::error_code(ErrorCode::PermissionDenied)))?;  // Keep error code for actual errors
+                    logging::error_code(ErrorCode::PermissionDenied)))?
         }
-        _ => {}  // Other commands don't need root
+        _ => {}
     }
 
     match &cli.command {
         Commands::AddNetwork { mode, name, password, priority, ip, user_id } => {
+            // Validate network name
+            if name.is_empty() || name.len() > 32 {
+                return Err(anyhow::anyhow!("{} Invalid network name length", 
+                    logging::error_code(ErrorCode::NetworkConfigInvalid)));
+            }
+
+            // Validate IP if present
+            if let Some(ip) = ip.as_ref() {
+                if !IP_REGEX.is_match(ip) {
+                    return Err(anyhow::anyhow!("{} Invalid IP address format", 
+                        logging::error_code(ErrorCode::NetworkConfigInvalid)));
+                }
+            }
+
+            // Validate mode-specific arguments
+            mode.validate_mode_specific(ip, user_id)
+                .with_context(|| format!("{} Invalid mode-specific configuration", 
+                    logging::error_code(ErrorCode::NetworkConfigInvalid)))?;
+
             validate_args(mode, ip, user_id)
                 .with_context(|| format!("{} Invalid network configuration", 
                     logging::error_code(ErrorCode::NetworkConfigInvalid)))?;
@@ -229,7 +265,6 @@ fn main() -> Result<()> {
             
             let mut manager = connectivity::ConnectivityManager::new(config);
             
-            // Only log startup once for the service
             info!("Connectivity monitoring active");
             
             if let Err(e) = manager.run() {
@@ -246,6 +281,31 @@ fn main() -> Result<()> {
             check_interval, 
             max_retries 
         } => {
+            // Validate check interval
+            if *check_interval < MIN_CHECK_INTERVAL || *check_interval > MAX_CHECK_INTERVAL {
+                return Err(anyhow::anyhow!("{} Check interval must be between {} and {} seconds", 
+                    logging::error_code(ErrorCode::ServiceConfigError),
+                    MIN_CHECK_INTERVAL,
+                    MAX_CHECK_INTERVAL
+                ));
+            }
+
+            // Validate max retries
+            if *max_retries > MAX_RETRIES {
+                return Err(anyhow::anyhow!("{} Max retries cannot exceed {}", 
+                    logging::error_code(ErrorCode::ServiceConfigError),
+                    MAX_RETRIES
+                ));
+            }
+
+            // Validate email if provided
+            if let Some(email) = email.as_ref() {
+                if !EMAIL_REGEX.is_match(email) {
+                    return Err(anyhow::anyhow!("{} Invalid email address format", 
+                        logging::error_code(ErrorCode::EmailConfigInvalid)));
+                }
+            }
+
             install_service(
                 email.as_deref(),
                 smtp_server.as_deref(),
@@ -289,11 +349,22 @@ fn main() -> Result<()> {
         }
 
         Commands::SetEnv { name, value } => {
+            // Validate environment variable name
+            if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                return Err(anyhow::anyhow!("{} Invalid environment variable name: must contain only letters, numbers, and underscores", 
+                    logging::error_code(ErrorCode::EnvVarInvalid)));
+            }
+
+            // Prevent empty values
+            if value.trim().is_empty() {
+                return Err(anyhow::anyhow!("{} Environment variable value cannot be empty", 
+                    logging::error_code(ErrorCode::EnvVarEmpty)));
+            }
+
             set_environment_variable(name, value)?;
         }
 
         Commands::SendLoginTicket => {
-            // Try to load email configuration from environment variables
             let email = get_env_var("EMAIL_ADDRESS")
                 .with_context(|| format!("{} EMAIL_ADDRESS not configured", 
                     logging::error_code(ErrorCode::EmailConfigMissing)))?;
@@ -324,6 +395,12 @@ fn main() -> Result<()> {
         Commands::ViewLog { file } => {
             let base_name = file.as_deref().unwrap_or("main");
             
+            // Prevent path traversal
+            if base_name.contains("..") || base_name.contains('/') || base_name.contains('\\') {
+                return Err(anyhow::anyhow!("{} Invalid log file name", 
+                    logging::error_code(ErrorCode::LogFileInvalid)));
+            }
+            
             // List all files in the log directory
             let entries = std::fs::read_dir(logging::LOG_DIR)
                 .context("Failed to read log directory")?;
@@ -341,6 +418,17 @@ fn main() -> Result<()> {
             match latest_log {
                 Some(log_entry) => {
                     let log_path = log_entry.path();
+                    
+                    // Check file size before reading
+                    let metadata = std::fs::metadata(&log_path)
+                        .with_context(|| format!("Failed to read log file metadata: {}", log_path.display()))?;
+                    
+                    if metadata.len() > MAX_LOG_SIZE {
+                        return Err(anyhow::anyhow!("{} Log file too large (max {}MB)", 
+                            logging::error_code(ErrorCode::LogFileTooLarge),
+                            MAX_LOG_SIZE / 1024 / 1024));
+                    }
+                    
                     // Read and display the log file
                     let content = std::fs::read_to_string(&log_path)
                         .with_context(|| format!("Failed to read log file: {}", log_path.display()))?;
@@ -357,33 +445,33 @@ fn main() -> Result<()> {
                             }
                         }
                     }
-                    return Err(anyhow::anyhow!("No matching log file found for: {}", base_name));
+                    return Err(anyhow::anyhow!("{} No matching log file found for: {}", 
+                        logging::error_code(ErrorCode::LogFileError),
+                        base_name));
                 }
             }
         }
 
-        Commands::TestConnections { max_trials, interval} => {
+        Commands::TestConnectivity { max_trials, interval} => {
             use std::{thread, time::Duration, fs::OpenOptions, io::Write};
             use chrono::Local;
             use connectivity::NetworkInfo;
 
-            // Generate a timestamp-based filename
             let timestamp = Local::now().format("%Y%m%d_%H%M%S");
             let filename = format!("test_connections_{}.csv", timestamp);
+            
             println!("Starting network connection tests:");
             println!("Max trials: {}", max_trials);
             println!("Restart interval: {} seconds", interval);
             println!("Output file: {}", filename);
 
-            // Create new file with headers
             let mut file = OpenOptions::new()
                 .create(true)
                 .write(true)
                 .open(&filename)
                 .with_context(|| format!("Failed to create output file: {}", filename))?;
 
-            // Write CSV headers
-            writeln!(file, "timestamp,trial,ssid,bssid,ip_address,signal_strength,channel,frequency,rate,mode,connection_time_ms")?;
+            writeln!(file, "timestamp,trial,ssid,bssid,ip_address,signal_strength,channel,frequency,rate,mode,connection_time_ms,internet_connectivity")?;
 
             for trial in 1..=*max_trials {
                 println!("\nTrial {} of {}", trial, max_trials);
@@ -396,36 +484,89 @@ fn main() -> Result<()> {
 
                 let start_time = std::time::Instant::now();
                 
-                // Wait for connection and collect network info
-                thread::sleep(Duration::from_secs(10)); // Initial wait for service to start
+                // Wait for connection with timeout
+                let mut connected = false;
+                let mut has_ip = false;
+                let timeout = start_time + Duration::from_secs(NETWORK_TIMEOUT);
                 
-                if let Ok(network_info) = NetworkInfo::get_current_connection() {
-                    let connection_time = start_time.elapsed().as_millis();
-                    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                    
-                    // Write to CSV file
-                    writeln!(
-                        file,
-                        "{},{},{},{},{},{},{},{},{},{},{}",
-                        timestamp,
-                        trial,
-                        network_info.ssid.unwrap_or_default(),
-                        network_info.bssid.unwrap_or_default(),
-                        network_info.ip_address.unwrap_or_default(),
-                        network_info.signal_strength.unwrap_or_default(),
-                        network_info.channel.unwrap_or_default(),
-                        network_info.frequency.unwrap_or_default(),
-                        network_info.rate.unwrap_or_default(),
-                        network_info.mode.unwrap_or_default(),
-                        connection_time
-                    )?;
+                while std::time::Instant::now() < timeout {
+                    if let Ok(network_info) = NetworkInfo::get_current_connection() {
+                        // Check if we have an IP address
+                        if let Some(ip) = network_info.ip_address {
+                            if !ip.is_empty() && ip != "0.0.0.0" {
+                                connected = true;
+                                has_ip = true;
+                                // Add a small delay to ensure network is fully ready
+                                thread::sleep(Duration::from_secs(2));
+                                
+                                // Check if this is an AP connection (should have a static IP)
+                                let is_ap_mode = network_info.mode
+                                    .as_ref()
+                                    .map(|mode| mode == "AP")
+                                    .unwrap_or(false);
+                                
+                                if is_ap_mode {
+                                    println!("Connected in AP mode with IP: {}", ip);
+                                    // For AP mode, we expect no internet connectivity
+                                    connected = true;
+                                    has_ip = true;
+                                    break;
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    thread::sleep(Duration::from_secs(1));
+                }
 
-                    println!("Connection time: {}ms", connection_time);
+                if connected && has_ip {
+                    if let Ok(network_info) = NetworkInfo::get_current_connection() {
+                        let connection_time = start_time.elapsed().as_millis();
+                        let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                        
+                        let is_ap_mode = network_info.mode
+                            .as_ref()
+                            .map(|mode| mode == "AP")
+                            .unwrap_or(false);
+
+                        // Only test internet connectivity if not in AP mode
+                        let has_internet = if !is_ap_mode {
+                            std::process::Command::new("ping")
+                                .args(["-c", "1", "-W", "5", "8.8.8.8"])
+                                .status()
+                                .map(|status| status.success())
+                                .unwrap_or(false)
+                        } else {
+                            false // AP mode should not have internet
+                        };
+
+                        writeln!(
+                            file,
+                            "{},{},{},{},{},{},{},{},{},{},{},{}",
+                            timestamp,
+                            trial,
+                            network_info.ssid.unwrap_or_default(),
+                            network_info.bssid.unwrap_or_default(),
+                            network_info.ip_address.unwrap_or_default(),
+                            network_info.signal_strength.unwrap_or_default(),
+                            network_info.channel.unwrap_or_default(),
+                            network_info.frequency.unwrap_or_default(),
+                            network_info.rate.unwrap_or_default(),
+                            network_info.mode.clone().unwrap_or_default(),
+                            connection_time,
+                            has_internet
+                        )?;
+
+                        println!("Mode: {}, Connection time: {}ms, Internet: {}", 
+                            network_info.mode.clone().unwrap_or_default(),
+                            connection_time, 
+                            if has_internet { "Yes" } else { "No" });
+                    }
                 } else {
-                    println!("Failed to get network information");
+                    println!("Connection timeout after {}s", NETWORK_TIMEOUT);
                     writeln!(
                         file,
-                        "{},{},NO_CONNECTION,,,,,,,,,-1",
+                        "{},{},CONNECTION_TIMEOUT,,,,,,,,,-1,false",
                         Local::now().format("%Y-%m-%d %H:%M:%S"),
                         trial
                     )?;

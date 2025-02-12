@@ -6,9 +6,24 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::process::Command;
 use std::thread;
+use std::fs::OpenOptions;
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::PermissionsExt;
+use regex::Regex;
+use lazy_static::lazy_static;
+use std::path::PathBuf;
 
 pub const SYSTEM_CONNECTIONS_PATH: &str = "/etc/NetworkManager/system-connections/";
 const NETWORK_MANAGER_CONFIG_PATH: &str = "/etc/NetworkManager/NetworkManager.conf";
+
+lazy_static! {
+    static ref VALID_NAME_REGEX: Regex = Regex::new(r"^[a-zA-Z0-9_-]+$").unwrap();
+}
+
+const TEMPLATE_DIR: &str = "src/templates/connections";
+const MAX_SSID_LENGTH: usize = 32;
+const MIN_PASSWORD_LENGTH: usize = 8;
+const MAX_PASSWORD_LENGTH: usize = 63;
 
 #[derive(Clone, ValueEnum, Debug)]
 pub enum NetworkMode {
@@ -28,6 +43,29 @@ impl NetworkMode {
             NetworkMode::WPAEAP => vec!["name", "password", "id"],
         }
     }
+
+    pub fn validate_mode_specific(&self, ip: &Option<String>, user_id: &Option<String>) -> Result<()> {
+        match self {
+            NetworkMode::AP => {
+                if let Some(ip) = ip {
+                    if !ip.split('.').all(|octet| {
+                        octet.parse::<u8>().is_ok()
+                    }) {
+                        return Err(anyhow!("Invalid IP address format"));
+                    }
+                }
+            },
+            NetworkMode::WPAEAP => {
+                if let Some(id) = user_id {
+                    if id.is_empty() || id.len() > 64 {
+                        return Err(anyhow!("User ID must be between 1 and 64 characters"));
+                    }
+                }
+            },
+            _ => {}
+        }
+        Ok(())
+    }
 }
 
 pub fn validate_args(mode: &NetworkMode, ip: &Option<String>, user_id: &Option<String>) -> Result<()> {
@@ -45,14 +83,37 @@ pub fn validate_args(mode: &NetworkMode, ip: &Option<String>, user_id: &Option<S
 }
 
 pub fn generate_connection_file(mode: &NetworkMode, name: &str, password: &str, priority: &str, ip: &Option<String>, user_id: &Option<String>) -> Result<String> {
-    let template_path = match mode {
-        NetworkMode::AP => "src/templates/connections/ap.nmconnection",
-        NetworkMode::WPA => "src/templates/connections/wpa.nmconnection",
-        NetworkMode::WPAEAP => "src/templates/connections/wpaeap.nmconnection",
+    // Validate inputs
+    if name.len() > MAX_SSID_LENGTH || name.is_empty() {
+        return Err(anyhow!("SSID must be between 1 and {} characters", MAX_SSID_LENGTH));
+    }
+
+    if password.len() < MIN_PASSWORD_LENGTH || password.len() > MAX_PASSWORD_LENGTH {
+        return Err(anyhow!("Password must be between {} and {} characters", 
+            MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH));
+    }
+
+    // Validate priority is a number
+    if let Err(_) = priority.parse::<u32>() {
+        return Err(anyhow!("Priority must be a valid number"));
+    }
+
+    // Construct template path safely
+    let template_name = match mode {
+        NetworkMode::AP => "ap.nmconnection",
+        NetworkMode::WPA => "wpa.nmconnection",
+        NetworkMode::WPAEAP => "wpaeap.nmconnection",
     };
 
-    let template = fs::read_to_string(template_path)
-        .with_context(|| format!("Failed to read template file: {}", template_path))?;
+    let template_path = PathBuf::from(TEMPLATE_DIR).join(template_name);
+    
+    // Verify template exists and is a file
+    if !template_path.is_file() {
+        return Err(anyhow!("Template file not found: {}", template_path.display()));
+    }
+
+    let template = fs::read_to_string(&template_path)
+        .with_context(|| format!("Failed to read template file: {}", template_path.display()))?;
 
     let mut replacements = HashMap::new();
     match mode {
@@ -84,16 +145,34 @@ pub fn generate_connection_file(mode: &NetworkMode, name: &str, password: &str, 
 }
 
 pub fn write_connection_file(name: &str, content: &str) -> Result<()> {
+    // Validate connection name
+    if !VALID_NAME_REGEX.is_match(name) {
+        return Err(anyhow!("Invalid connection name. Use only letters, numbers, underscores, and hyphens"));
+    }
+
     let filename = format!("{}{}.nmconnection", SYSTEM_CONNECTIONS_PATH, name);
-    fs::write(&filename, content)
-        .with_context(|| format!("Failed to write connection file: {}", filename))?;
-    
-    // Set appropriate permissions (600) for NetworkManager
-    use std::os::unix::fs::PermissionsExt;
     let path = Path::new(&filename);
-    let mut perms = fs::metadata(path)?.permissions();
-    perms.set_mode(0o600);
-    fs::set_permissions(path, perms)?;
+
+    // Check if parent directory exists and has correct permissions
+    if !Path::new(SYSTEM_CONNECTIONS_PATH).exists() {
+        return Err(anyhow!("NetworkManager connections directory does not exist"));
+    }
+
+    // Create file with correct permissions from the start
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .open(&path)
+        .with_context(|| format!("Failed to create connection file: {}", filename))?;
+
+    // Write content
+    std::io::Write::write_all(&mut file, content.as_bytes())
+        .with_context(|| format!("Failed to write connection file: {}", filename))?;
+
+    // Ensure all data is written to disk
+    file.sync_all()
+        .with_context(|| format!("Failed to sync connection file: {}", filename))?;
 
     // Reload all connections in NetworkManager
     Command::new("nmcli")
@@ -110,7 +189,25 @@ pub fn write_connection_file(name: &str, content: &str) -> Result<()> {
 pub fn ensure_dnsmasq_config() -> Result<()> {
     let path = Path::new(NETWORK_MANAGER_CONFIG_PATH);
     
-    // Read existing config
+    // Ensure the file exists
+    if !path.exists() {
+        return Err(anyhow!("NetworkManager configuration file does not exist"));
+    }
+
+    // Create backup before modification
+    let backup_path = path.with_extension("conf.backup");
+    fs::copy(path, &backup_path)
+        .with_context(|| "Failed to create backup of NetworkManager.conf")?;
+
+    // Read existing config with size limit
+    const MAX_CONFIG_SIZE: u64 = 1024 * 1024; // 1MB limit
+    let metadata = fs::metadata(path)
+        .with_context(|| "Failed to read NetworkManager.conf metadata")?;
+    
+    if metadata.len() > MAX_CONFIG_SIZE {
+        return Err(anyhow!("NetworkManager.conf is too large"));
+    }
+
     let mut content = String::new();
     fs::File::open(path)
         .with_context(|| format!("Failed to open {}", NETWORK_MANAGER_CONFIG_PATH))?
@@ -124,19 +221,26 @@ pub fn ensure_dnsmasq_config() -> Result<()> {
     // Modify the content
     let new_content = if content.contains("[main]") {
         // Add dns=dnsmasq under existing [main] section
-        content.replace("[main]", "[main]\ndns=dnsmasq")
+        let re = Regex::new(r"(?m)^\[main\]$").unwrap();
+        re.replace(&content, "[main]\ndns=dnsmasq").into_owned()
     } else {
         // Create [main] section with dns=dnsmasq
         format!("{}\n[main]\ndns=dnsmasq\n", content)
     };
 
-    // Write the modified content back
+    // Write to temporary file first
     let mut temp_path = path.to_path_buf();
     temp_path.set_extension("tmp");
     
     fs::write(&temp_path, &new_content)
         .with_context(|| "Failed to write temporary config file")?;
-    
+
+    // Set correct permissions
+    let mut perms = fs::metadata(&temp_path)?.permissions();
+    perms.set_mode(0o644);
+    fs::set_permissions(&temp_path, perms)?;
+
+    // Atomic rename
     fs::rename(&temp_path, path)
         .with_context(|| "Failed to update NetworkManager.conf")?;
 

@@ -3,10 +3,12 @@ use log::{info, warn, debug, error};
 use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use crate::email::{EmailConfig, send_login_ticket, LoginTicketReason};
 use crate::logging;
 use crate::logging::ErrorCode;
+use std::collections::HashMap;
+use metrics::{counter, gauge};
 
 pub struct NetworkConfig {
     pub notification_email: String,
@@ -15,6 +17,9 @@ pub struct NetworkConfig {
     pub smtp_password: String,
     pub check_interval: Duration,
     pub max_retries: u32,
+    pub email_rate_limit: Duration,
+    pub connection_retry_delay: Duration,
+    pub stale_connection_threshold: Duration,
 }
 
 impl NetworkConfig {
@@ -38,6 +43,24 @@ impl NetworkConfig {
                 .unwrap_or_else(|_| "3".to_string())
                 .parse()
                 .unwrap_or(3),
+            email_rate_limit: Duration::from_secs(
+                std::env::var("EMAIL_RATE_LIMIT_SECS")
+                    .unwrap_or_else(|_| "3600".to_string())
+                    .parse()
+                    .unwrap_or(3600)
+            ),
+            connection_retry_delay: Duration::from_secs(
+                std::env::var("CONNECTION_RETRY_DELAY_SECS")
+                    .unwrap_or_else(|_| "5".to_string())
+                    .parse()
+                    .unwrap_or(5)
+            ),
+            stale_connection_threshold: Duration::from_secs(
+                std::env::var("STALE_CONNECTION_THRESHOLD_SECS")
+                    .unwrap_or_else(|_| "3600".to_string())
+                    .parse()
+                    .unwrap_or(3600)
+            ),
         })
     }
 }
@@ -51,6 +74,7 @@ struct NetworkConnection {
 pub struct ConnectivityManager {
     config: NetworkConfig,
     last_ip: Option<String>,
+    metrics: NetworkMetrics,
 }
 
 impl ConnectivityManager {
@@ -58,6 +82,7 @@ impl ConnectivityManager {
         Self {
             config,
             last_ip: None,
+            metrics: NetworkMetrics::default(),
         }
     }
 
@@ -104,9 +129,19 @@ impl ConnectivityManager {
     }
 
     fn check_connectivity(&mut self) -> Result<()> {
+        // Add multiple DNS servers for redundancy
         if !self.check_internet_connectivity() {
             error!("{} Internet connectivity check failed", 
                 logging::error_code(ErrorCode::NetworkConnectFailed));
+            
+            // Add retry with different DNS servers before trying to reconnect
+            for dns in ["8.8.8.8", "1.1.1.1", "8.8.4.4"].iter() {
+                if self.check_internet_connectivity_with_dns(dns) {
+                    debug!("Connectivity restored using DNS server {}", dns);
+                    return Ok(());
+                }
+            }
+            
             self.try_connect_networks()?;
         }
 
@@ -136,54 +171,138 @@ impl ConnectivityManager {
     }
 
     fn check_internet_connectivity(&self) -> bool {
-        let output = Command::new("ping")
-            .args(["-c", "1", "-W", "5", "8.8.8.8"])
-            .output();
+        self.check_internet_connectivity_with_dns("8.8.8.8")
+    }
 
-        match output {
-            Ok(output) => output.status.success(),
-            Err(e) => {
-                warn!("Ping command failed: {}", e);
-                false
+    fn check_internet_connectivity_with_dns(&self, dns: &str) -> bool {
+        // Add timeout and multiple attempts
+        for _ in 0..3 {
+            let output = Command::new("ping")
+                .args(["-c", "1", "-W", "3", dns])
+                .output();
+
+            if let Ok(output) = output {
+                if output.status.success() {
+                    return true;
+                }
             }
+            thread::sleep(Duration::from_secs(1));
         }
+        false
     }
 
     fn get_current_ip(&self) -> Result<String> {
+        // Try multiple methods to get IP address
+        if let Ok(ip) = self.get_ip_from_hostname() {
+            return Ok(ip);
+        }
+
+        if let Ok(ip) = self.get_ip_from_ip_addr() {
+            return Ok(ip);
+        }
+
+        Err(anyhow!("Failed to get IP address using all available methods"))
+    }
+
+    fn get_ip_from_hostname(&self) -> Result<String> {
         let output = Command::new("hostname")
             .args(["-I"])
             .output()
-            .context("Failed to get IP address")?;
+            .context("Failed to get IP address from hostname")?;
         
         let ip = String::from_utf8_lossy(&output.stdout)
             .split_whitespace()
             .next()
-            .ok_or_else(|| anyhow!("No IP address found"))?
+            .ok_or_else(|| anyhow!("No IP address found in hostname output"))?
             .to_string();
+        
+        // Validate IP address format
+        if !ip.chars().all(|c| c.is_ascii_digit() || c == '.') {
+            return Err(anyhow!("Invalid IP address format"));
+        }
         
         Ok(ip)
     }
 
-    fn try_connect_networks(&self) -> Result<()> {
-        let networks = self.get_available_networks()?;
+    fn get_ip_from_ip_addr(&self) -> Result<String> {
+        let output = Command::new("ip")
+            .args(["addr", "show"])
+            .output()
+            .context("Failed to get IP address from ip addr")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if line.contains("inet ") && !line.contains("inet6") && !line.contains("127.0.0.1") {
+                if let Some(ip) = line.split_whitespace()
+                    .nth(1)
+                    .and_then(|s| s.split('/').next()) {
+                    return Ok(ip.to_string());
+                }
+            }
+        }
+        
+        Err(anyhow!("No valid IP address found in ip addr output"))
+    }
+
+    fn try_connect_networks(&mut self) -> Result<()> {
+        self.cleanup_stale_connections()?;
+        let networks = self.get_available_networks()?;  // Networks are already sorted by priority
         
         for network in networks {
-            info!("Attempting to connect to network: {}", network.name);
+            info!("Attempting to connect to network: {} (priority: {})", network.name, network.priority);
             
-            match self.connect_to_network(&network) {
-                Ok(()) => {
-                    thread::sleep(Duration::from_secs(10));
-                    if self.check_internet_connectivity() {
-                        info!("Successfully connected to network: {}", network.name);
-                        return Ok(());
+            let attempts = self.metrics.connection_attempts
+                .entry(network.name.clone())
+                .or_insert(0);
+            *attempts += 1;
+            counter!("network.connection_attempts", 1);
+
+            let connect_result = std::panic::catch_unwind(|| {
+                self.connect_to_network(&network)
+            });
+
+            match connect_result {
+                Ok(Ok(())) => {
+                    // Check if connection is stable
+                    for i in 1..=3 {
+                        thread::sleep(self.config.connection_retry_delay);
+                        if self.check_internet_connectivity() {
+                            // Measure quality for monitoring purposes only
+                            let quality = self.measure_connection_quality(&network.name);
+                            info!("Successfully connected to network: {} (priority: {}, quality: {:.2})", 
+                                network.name, network.priority, quality);
+                            
+                            // Update metrics
+                            self.metrics.last_connection_time
+                                .insert(network.name.clone(), Instant::now());
+                            self.metrics.connection_quality
+                                .insert(network.name.clone(), quality);
+                            counter!("network.successful_connections", 1);
+                            gauge!("network.connection_quality", quality);
+                            
+                            // Return success regardless of quality - we respect priority
+                            return Ok(());
+                        }
+                        debug!("Connection stability check {}/3...", i);
                     }
-                    error!("{} Failed to establish internet connectivity on network: {}", 
+                    error!("{} Failed to establish stable connection on network: {}", 
                         logging::error_code(ErrorCode::NetworkConnectFailed), network.name);
+                    counter!("network.failed_connections", 1);
                 }
-                Err(e) => {
-                    error!("{} Failed to connect to network {}: {}", 
-                        logging::error_code(ErrorCode::NetworkConnectFailed), network.name, e);
-                    continue;
+                Ok(Err(e)) => {
+                    error!("{} Failed to connect to network {} (priority: {}): {}", 
+                        logging::error_code(ErrorCode::NetworkConnectFailed), 
+                        network.name, 
+                        network.priority,
+                        e);
+                    counter!("network.connection_errors", 1);
+                }
+                Err(_) => {
+                    error!("{} Connection attempt panicked for network {} (priority: {})", 
+                        logging::error_code(ErrorCode::NetworkConnectFailed), 
+                        network.name,
+                        network.priority);
+                    counter!("network.connection_panics", 1);
                 }
             }
         }
@@ -243,7 +362,14 @@ impl ConnectivityManager {
         Ok(())
     }
 
-    fn send_ip_email(&self) -> Result<()> {
+    fn send_ip_email(&mut self) -> Result<()> {
+        if let Some(last_sent) = self.metrics.last_email_sent {
+            if last_sent.elapsed() < self.config.email_rate_limit {
+                debug!("Skipping email notification due to rate limiting");
+                return Ok(());
+            }
+        }
+
         let email_config = EmailConfig {
             smtp_server: self.config.smtp_server.clone(),
             smtp_user: self.config.smtp_user.clone(),
@@ -256,7 +382,65 @@ impl ConnectivityManager {
             LoginTicketReason::IpChanged
         } else {
             LoginTicketReason::InitialLogin
-        })
+        })?;
+
+        self.metrics.last_email_sent = Some(Instant::now());
+        counter!("network.email_notifications_sent", 1);
+        Ok(())
+    }
+
+    fn cleanup_stale_connections(&mut self) -> Result<()> {
+        let now = Instant::now();
+        let stale_networks: Vec<String> = self.metrics.last_connection_time
+            .iter()
+            .filter(|(_, &last_time)| {
+                now.duration_since(last_time) > self.config.stale_connection_threshold
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        for network in stale_networks {
+            debug!("Cleaning up stale connection: {}", network);
+            Command::new("nmcli")
+                .args(["connection", "down", &network])
+                .output()
+                .with_context(|| format!("Failed to disconnect stale network: {}", network))?;
+
+            self.metrics.connection_attempts.remove(&network);
+            self.metrics.last_connection_time.remove(&network);
+            self.metrics.connection_quality.remove(&network);
+
+            counter!("network.stale_connections_cleaned", 1);
+        }
+
+        Ok(())
+    }
+
+    fn measure_connection_quality(&mut self, network_name: &str) -> f64 {
+        let mut total_latency = 0.0;
+        let mut successful_pings = 0;
+        
+        for dns in ["8.8.8.8", "1.1.1.1"].iter() {
+            for _ in 0..3 {
+                let start = Instant::now();
+                if self.check_internet_connectivity_with_dns(dns) {
+                    total_latency += start.elapsed().as_millis() as f64;
+                    successful_pings += 1;
+                }
+            }
+        }
+
+        let quality = if successful_pings > 0 {
+            let avg_latency = total_latency / successful_pings as f64;
+            let success_rate = successful_pings as f64 / 6.0;
+            success_rate * (1000.0 / (avg_latency + 100.0))
+        } else {
+            0.0
+        };
+
+        // Store quality metric but don't use it for decision making
+        self.metrics.connection_quality.insert(network_name.to_string(), quality);
+        quality
     }
 }
 
@@ -463,4 +647,12 @@ impl NetworkInfo {
 
         Ok(())
     }
+}
+
+#[derive(Default)]
+struct NetworkMetrics {
+    connection_attempts: HashMap<String, u32>,
+    last_connection_time: HashMap<String, Instant>,
+    connection_quality: HashMap<String, f64>,
+    last_email_sent: Option<Instant>,
 }

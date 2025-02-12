@@ -9,6 +9,8 @@ pub const NETWORK_ERROR_BASE: u32 = 1000;
 pub const SERVICE_ERROR_BASE: u32 = 2000;
 pub const EMAIL_ERROR_BASE: u32 = 3000;
 pub const SYSTEM_ERROR_BASE: u32 = 4000;
+pub const LOG_FILE_ERROR_BASE: u32 = 5000;
+pub const ENV_VAR_ERROR_BASE: u32 = 6000;
 pub const GENERAL_ERROR_BASE: u32 = 9000;
 
 #[derive(Debug)]
@@ -28,15 +30,25 @@ pub enum ErrorCode {
     
     // Email related (3000-3999)
     EmailConfigMissing = EMAIL_ERROR_BASE,
-    EmailSendFailed = EMAIL_ERROR_BASE + 1,
-    EmailTemplateFailed = EMAIL_ERROR_BASE + 2,
+    EmailConfigInvalid = EMAIL_ERROR_BASE + 1,
+    EmailSendFailed = EMAIL_ERROR_BASE + 2,
+    EmailTemplateFailed = EMAIL_ERROR_BASE + 3,
     
     // System related (4000-4999)
     PermissionDenied = SYSTEM_ERROR_BASE,
     LoggingSetupFailed = SYSTEM_ERROR_BASE + 1,
-    EnvVarError = SYSTEM_ERROR_BASE + 2,
-    FileSystemError = SYSTEM_ERROR_BASE + 3,
+    FileSystemError = SYSTEM_ERROR_BASE + 2,
+
+    // Log file related (5000-5999)
+    LogFileError = LOG_FILE_ERROR_BASE,
+    LogFileTooLarge = LOG_FILE_ERROR_BASE + 1,
+    LogFileInvalid = LOG_FILE_ERROR_BASE + 2,
     
+    // Environment variable related (6000-6999)
+    EnvVarError = ENV_VAR_ERROR_BASE,
+    EnvVarInvalid = ENV_VAR_ERROR_BASE + 1,
+    EnvVarEmpty = ENV_VAR_ERROR_BASE + 2,
+
     // General (9000-9999)
     UnexpectedError = GENERAL_ERROR_BASE + 999,
 }

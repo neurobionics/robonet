@@ -1,13 +1,24 @@
 use anyhow::{Context, Result, anyhow};
-use log::{info, debug, error};
+use log::{info, debug, error, warn};
 use std::collections::HashMap;
-use std::process::Command;
+use std::process::{Command, Output};
+use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
 use crate::email::{EmailConfig, send_login_ticket, LoginTicketReason};
-use crate::utils::get_env_var;
+use crate::utils::{get_env_var, check_root_privileges};
 use crate::logging;
 use crate::logging::ErrorCode;
 
 pub const SERVICE_TEMPLATE: &str = include_str!("templates/services/robonet-monitor.service");
+
+fn run_systemctl_command(args: &[&str]) -> Result<Output> {
+    Command::new("systemctl")
+        .args(args)
+        .output()
+        .with_context(|| format!("{} Failed to execute systemctl command: {:?}",
+            logging::error_code(ErrorCode::ServiceInstallFailed),
+            args))
+}
 
 pub fn install_service(
     email: Option<&str>,
@@ -17,9 +28,9 @@ pub fn install_service(
     check_interval: u64,
     max_retries: u32,
 ) -> Result<()> {
-
+    check_root_privileges()?;
     info!("Installing network manager service");
-    debug!("Email: {:?}, SMTP Server: {:?}", email, smtp_server); // Use {:?} for Option types
+    debug!("Email: {:?}, SMTP Server: {:?}", email, smtp_server);
     
     let email = email
         .map(String::from)
@@ -54,7 +65,15 @@ pub fn install_service(
 
     let executable_path = std::env::current_exe()
         .context("Failed to get executable path")?;
-    
+
+    // Validate executable path
+    if !executable_path.exists() {
+        return Err(anyhow!("Executable not found at: {}", executable_path.display()));
+    }
+
+    // Create service file path
+    let service_path = Path::new("/etc/systemd/system/robonet-monitor.service");
+
     // Create a HashMap for template variables
     let mut vars = HashMap::new();
     vars.insert("EXECUTABLE_PATH", executable_path.display().to_string());
@@ -70,43 +89,53 @@ pub fn install_service(
         content.replace(&format!("${{{}}}", key), value)
     });
 
-    debug!("Writing service file to /etc/systemd/system/robonet-monitor.service");
-    std::fs::write("/etc/systemd/system/robonet-monitor.service", service_content)
+    debug!("Writing service file to {}", service_path.display());
+    
+    // Write service file with proper permissions (644)
+    std::fs::write(service_path, service_content.as_bytes())
         .context("Failed to write service file")?;
+    
+    std::fs::set_permissions(service_path, std::fs::Permissions::from_mode(0o644))
+        .context("Failed to set service file permissions")?;
 
     // Reload systemd daemon
-    let status = Command::new("systemctl")
-        .arg("daemon-reload")
-        .status()
-        .with_context(|| format!("{} Failed to reload systemd daemon",
-            logging::error_code(ErrorCode::ServiceInstallFailed)))?;
-
-    if !status.success() {
-        error!("{} Failed to reload systemd daemon",
-            logging::error_code(ErrorCode::ServiceInstallFailed));
-        return Err(anyhow!("Failed to reload systemd daemon"));
+    let output = run_systemctl_command(&["daemon-reload"])?;
+    if !output.status.success() {
+        let error_msg = String::from_utf8_lossy(&output.stderr);
+        error!("{} Failed to reload systemd daemon: {}", 
+            logging::error_code(ErrorCode::ServiceInstallFailed),
+            error_msg);
+        return Err(anyhow!("Failed to reload systemd daemon: {}", error_msg));
     }
 
     // Enable service
-    let status = Command::new("systemctl")
-        .args(["enable", "robonet-monitor"])
-        .status()
-        .context("Failed to enable service")?;
-
-    if !status.success() {
-        return Err(anyhow!("Failed to enable service"));
+    let output = run_systemctl_command(&["enable", "robonet-monitor"])?;
+    if !output.status.success() {
+        let error_msg = String::from_utf8_lossy(&output.stderr);
+        error!("Failed to enable service: {}", error_msg);
+        // Cleanup on failure
+        let _ = std::fs::remove_file(service_path);
+        return Err(anyhow!("Failed to enable service: {}", error_msg));
     }
 
     // Start service
-    let status = Command::new("systemctl")
-        .args(["start", "robonet-monitor"])
-        .status()
-        .context("Failed to start service")?;
-
-    if !status.success() {
-        return Err(anyhow!("Failed to start service"));
+    let output = run_systemctl_command(&["start", "robonet-monitor"])?;
+    if !output.status.success() {
+        let error_msg = String::from_utf8_lossy(&output.stderr);
+        error!("Failed to start service: {}", error_msg);
+        // Cleanup on failure
+        let _ = run_systemctl_command(&["disable", "robonet-monitor"]);
+        let _ = std::fs::remove_file(service_path);
+        return Err(anyhow!("Failed to start service: {}", error_msg));
     }
 
+    // Verify service is running
+    let output = run_systemctl_command(&["is-active", "robonet-monitor"])?;
+    if !output.status.success() {
+        warn!("Service installed but may not be running properly. Please check status manually.");
+    }
+
+    info!("Service installed and started successfully!");
     println!("Service installed and started successfully!");
     println!("To check service status: sudo systemctl status robonet-monitor");
     println!("To view logs: sudo journalctl -u robonet-monitor -f");
@@ -115,37 +144,36 @@ pub fn install_service(
 }
 
 pub fn uninstall_service() -> Result<()> {
-    use std::process::Command;
-    use anyhow::Context;
-    use log::info;
-
+    check_root_privileges()?;
     info!("Uninstalling network manager service");
 
     // Stop the service if it's running
-    let _ = Command::new("systemctl")
-        .args(["stop", "robonet-monitor.service"])
-        .output()
-        .context("Failed to stop service")?;
+    let output = run_systemctl_command(&["stop", "robonet-monitor"])?;
+    if !output.status.success() {
+        warn!("Failed to stop service, it might not be running");
+    }
 
     // Disable the service
-    Command::new("systemctl")
-        .args(["disable", "robonet-monitor.service"])
-        .output()
-        .with_context(|| format!("{} Failed to disable service",
-            logging::error_code(ErrorCode::ServiceUninstallFailed)))?;
+    let output = run_systemctl_command(&["disable", "robonet-monitor"])?;
+    if !output.status.success() {
+        let error_msg = String::from_utf8_lossy(&output.stderr);
+        error!("{} Failed to disable service: {}", 
+            logging::error_code(ErrorCode::ServiceUninstallFailed),
+            error_msg);
+    }
 
     // Remove the service file
-    let service_path = "/etc/systemd/system/robonet-monitor.service";
-    if std::path::Path::new(service_path).exists() {
+    let service_path = Path::new("/etc/systemd/system/robonet-monitor.service");
+    if service_path.exists() {
         std::fs::remove_file(service_path)
             .context("Failed to remove service file")?;
     }
 
     // Reload systemd daemon
-    Command::new("systemctl")
-        .arg("daemon-reload")
-        .output()
-        .context("Failed to reload systemd daemon")?;
+    let output = run_systemctl_command(&["daemon-reload"])?;
+    if !output.status.success() {
+        warn!("Failed to reload systemd daemon after uninstall");
+    }
 
     info!("Network manager service uninstalled successfully");
     println!("Network manager service has been uninstalled");
