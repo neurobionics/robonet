@@ -58,7 +58,6 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         files: target/debian/*.deb
-        tag_name: v$(cargo pkgid | cut -d# -f2)
         body_path: CHANGELOG.md
         draft: false
         prerelease: false
