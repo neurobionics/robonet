@@ -22,7 +22,7 @@ use lazy_static::lazy_static;
 const MAX_CHECK_INTERVAL: u64 = 300; // 5 minutes
 const MIN_CHECK_INTERVAL: u64 = 30; // 30 seconds
 const MAX_RETRIES: u32 = 10;
-const MAX_LOG_SIZE: u64 = 50 * 1024 * 1024; // 50MB
+const MAX_LOG_SIZE: u64 = 25 * 1024 * 1024; // 25MB
 const NETWORK_TIMEOUT: u64 = 30; // 30 seconds
 
 lazy_static! {
