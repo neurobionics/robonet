@@ -8,6 +8,14 @@ homepage = "https://github.com/neurobionics/robonet"
 repository = "https://github.com/neurobionics/robonet"
 authors = ["Senthur Ayyappan <senthura@umich.edu>"]
 
+[package.metadata.deb]
+maintainer = "Senthur Ayyappan <senthura@umich.edu>"
+copyright = "2025, Neurobionics Lab <neurobionics@umich.edu>"
+license-file = "LICENSE"
+depends = ["network-manager"]
+section = "utility"
+priority = "optional"
+
 [dependencies]
 anyhow = "1.0.95"
 clap = { version = "4.5.27", features = ["derive"] }

@@ -61,7 +61,11 @@ pub fn install_service(
     };
 
     info!("Testing email configuration");
-    send_login_ticket(&email_config, LoginTicketReason::InitialLogin)?;
+    if let Err(e) = send_login_ticket(&email_config, LoginTicketReason::InitialLogin) {
+        warn!("Email test failed: {}. Service will still be installed but email notifications may not work.", e);
+        println!("Warning: Email test failed. Service will be installed but email notifications may not work.");
+        println!("You can test email configuration later using 'robonet send-login-ticket'");
+    }
 
     let executable_path = std::env::current_exe()
         .context("Failed to get executable path")?;
