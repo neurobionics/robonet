@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.3](https://github.com/neurobionics/robonet/compare/v0.2.2...v0.2.3) - 2025-02-13
+
+### Other
+
+- Switching to release-plz instead of cargo-release.
+- Adding pre-release hooks to cargo-release.
+
 ## 2025-02-12
 
 ### 💼 Other
