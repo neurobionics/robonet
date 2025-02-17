@@ -298,11 +298,15 @@ fn main() -> Result<()> {
                 ));
             }
 
-            // Validate email if provided
+            // Validate email addresses if provided
             if let Some(email) = email.as_ref() {
-                if !EMAIL_REGEX.is_match(email) {
-                    return Err(anyhow::anyhow!("{} Invalid email address format", 
-                        logging::error_code(ErrorCode::EmailConfigInvalid)));
+                // Split email string by commas and validate each email
+                for email_addr in email.split(',').map(str::trim) {
+                    if !EMAIL_REGEX.is_match(email_addr) {
+                        return Err(anyhow::anyhow!("{} Invalid email address format: {}", 
+                            logging::error_code(ErrorCode::EmailConfigInvalid),
+                            email_addr));
+                    }
                 }
             }
 
@@ -378,18 +382,26 @@ fn main() -> Result<()> {
                 .with_context(|| format!("{} SMTP_PASSWORD not configured", 
                     logging::error_code(ErrorCode::EmailConfigMissing)))?;
 
+            // Split email addresses and create config
+            let recipients: Vec<String> = email
+                .split(',')
+                .map(str::trim)
+                .map(String::from)
+                .collect();
+
+            let recipient_count = recipients.len();
             let email_config = EmailConfig {
                 smtp_server,
                 smtp_user,
                 smtp_password,
-                recipient: email,
+                recipients,
             };
 
             send_login_ticket(&email_config, LoginTicketReason::ManualCheck)
                 .with_context(|| format!("{} Failed to send login ticket", 
                     logging::error_code(ErrorCode::EmailSendFailed)))?;
             
-            println!("Login ticket email sent successfully!");
+            println!("Login ticket email sent successfully to {} recipient(s)!", recipient_count);
         }
 
         Commands::ViewLog { file } => {

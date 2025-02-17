@@ -54,10 +54,10 @@ pub fn install_service(
 
     // Test email configuration before installing service
     let email_config = EmailConfig {
-        smtp_server: smtp_server.clone(),
-        smtp_user: smtp_user.clone(),
-        smtp_password: smtp_password.clone(),
-        recipient: email.clone(),
+        smtp_server: smtp_server.to_string(),
+        smtp_user: smtp_user.to_string(),
+        smtp_password: smtp_password.to_string(),
+        recipients: vec![email.clone()],
     };
 
     info!("Testing email configuration");

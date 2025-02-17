@@ -370,7 +370,7 @@ impl ConnectivityManager {
             smtp_server: self.config.smtp_server.clone(),
             smtp_user: self.config.smtp_user.clone(),
             smtp_password: self.config.smtp_password.clone(),
-            recipient: self.config.notification_email.clone(),
+            recipients: vec![self.config.notification_email.clone()],
         };
 
         // Change reason based on whether this is initial boot or IP change

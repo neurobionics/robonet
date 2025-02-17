@@ -12,7 +12,7 @@ pub struct EmailConfig {
     pub smtp_server: String,
     pub smtp_user: String,
     pub smtp_password: String,
-    pub recipient: String,
+    pub recipients: Vec<String>,
 }
 
 pub struct SystemInfo {
@@ -107,9 +107,15 @@ pub fn send_login_ticket(config: &EmailConfig, reason: LoginTicketReason) -> Res
         .replace("{SESSION_ID}", &system_info.session_id)
         .replace("{TIMESTAMP}", &system_info.timestamp);
 
-    let email = Message::builder()
-        .from("Raspberry Pi <raspberry.pi@localhost>".parse()?)
-        .to(config.recipient.parse::<Mailbox>()?)
+    let mut builder = Message::builder()
+        .from("Raspberry Pi <raspberry.pi@localhost>".parse()?);
+
+    // Add all recipients
+    for recipient in &config.recipients {
+        builder = builder.to(recipient.parse::<Mailbox>()?);
+    }
+
+    let email = builder
         .subject(format!(
             "Login Ticket for {} - {}", 
             system_info.hostname,
