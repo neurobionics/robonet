@@ -53,18 +53,25 @@ pub fn install_service(
         .context("SMTP password not provided. Set SMTP_PASSWORD environment variable or use --smtp-password flag")?;
 
     // Test email configuration before installing service
+    let recipients: Vec<String> = email.split(',')
+        .map(str::trim)
+        .map(String::from)
+        .collect();
+
+    info!("Testing email configuration with {} recipient(s)", recipients.len());
     let email_config = EmailConfig {
         smtp_server: smtp_server.to_string(),
         smtp_user: smtp_user.to_string(),
         smtp_password: smtp_password.to_string(),
-        recipients: vec![email.clone()],
+        recipients: recipients.clone(),
     };
 
-    info!("Testing email configuration");
     if let Err(e) = send_login_ticket(&email_config, LoginTicketReason::InitialLogin) {
         warn!("Email test failed: {}. Service will still be installed but email notifications may not work.", e);
         println!("Warning: Email test failed. Service will be installed but email notifications may not work.");
         println!("You can test email configuration later using 'robonet send-login-ticket'");
+    } else {
+        info!("Email test successful to {} recipient(s)", recipients.len());
     }
 
     let executable_path = std::env::current_exe()
