@@ -443,19 +443,35 @@ impl ConnectivityManager {
     fn force_ip_notification(&mut self) -> Result<()> {
         info!("Waiting for initial network connectivity...");
         
+        // Add initial delay to allow network manager to stabilize
+        std::thread::sleep(Duration::from_secs(5));
+        
         // Try for up to 2 minutes to get connectivity
         let timeout = std::time::Duration::from_secs(120);
         let start_time = std::time::Instant::now();
         
         while start_time.elapsed() < timeout {
-            // Check if we have internet connectivity
-            if !self.check_internet_connectivity() {
-                debug!("No internet connectivity, trying to connect to available networks...");
-                
-                // Try to connect to networks in priority order
-                if let Err(e) = self.try_connect_networks() {
-                    debug!("Failed to connect to any network: {}", e);
+            // First check if we already have internet connectivity
+            if self.check_internet_connectivity() {
+                // If we have connectivity, get the IP and proceed
+                if let Ok(current_ip) = self.get_current_ip() {
+                    info!("Initial IP address: {}", current_ip);
+                    self.last_ip = Some(current_ip.clone());
+                    
+                    debug!("Sending initial IP notification email");
+                    if let Err(e) = self.send_ip_email() {
+                        warn!("Failed to send initial IP notification email: {}", e);
+                        return Err(e);
+                    }
+                    info!("Successfully sent initial IP notification email");
+                    return Ok(());
                 }
+            }
+            
+            // No connectivity, try to connect to available networks
+            debug!("No internet connectivity, trying to connect to available networks...");
+            if let Err(e) = self.try_connect_networks() {
+                debug!("Failed to connect to any network: {}", e);
             }
             
             // Get current IP and check if we're in AP mode
@@ -471,18 +487,6 @@ impl ConnectivityManager {
                         self.last_ip = Some(current_ip);
                         return Ok(());  // No need to send email in AP mode
                     }
-                    
-                    // Not in AP mode, proceed with email notification
-                    info!("Initial IP address: {}", current_ip);
-                    self.last_ip = Some(current_ip.clone());
-                    
-                    debug!("Sending initial IP notification email");
-                    if let Err(e) = self.send_ip_email() {
-                        warn!("Failed to send initial IP notification email: {}", e);
-                        return Err(e);
-                    }
-                    info!("Successfully sent initial IP notification email");
-                    return Ok(());
                 }
                 Err(e) => {
                     debug!("Failed to get IP address, retrying: {}", e);
@@ -491,7 +495,7 @@ impl ConnectivityManager {
             
             debug!("Waiting for network connectivity... ({} seconds elapsed)", 
                 start_time.elapsed().as_secs());
-            std::thread::sleep(std::time::Duration::from_secs(2));
+            std::thread::sleep(Duration::from_secs(2));
         }
         
         Err(anyhow!("Timeout waiting for initial network connectivity"))
