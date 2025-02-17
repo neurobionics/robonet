@@ -17,7 +17,6 @@ pub struct NetworkConfig {
     pub smtp_password: String,
     pub check_interval: Duration,
     pub max_retries: u32,
-    pub email_rate_limit: Duration,
     pub connection_retry_delay: Duration,
     pub stale_connection_threshold: Duration,
 }
@@ -43,12 +42,6 @@ impl NetworkConfig {
                 .unwrap_or_else(|_| "3".to_string())
                 .parse()
                 .unwrap_or(3),
-            email_rate_limit: Duration::from_secs(
-                std::env::var("EMAIL_RATE_LIMIT_SECS")
-                    .unwrap_or_else(|_| "3600".to_string())
-                    .parse()
-                    .unwrap_or(3600)
-            ),
             connection_retry_delay: Duration::from_secs(
                 std::env::var("CONNECTION_RETRY_DELAY_SECS")
                     .unwrap_or_else(|_| "5".to_string())
@@ -89,14 +82,12 @@ impl ConnectivityManager {
     pub fn run(&mut self) -> Result<()> {
         info!("Initializing connectivity monitoring");
         let mut consecutive_failures = 0;
-        let mut first_run = true;
+        
+        // Force immediate IP check and notification on startup
+        info!("Performing initial connectivity check on startup");
+        self.force_ip_notification()?;
 
         loop {
-            if first_run {
-                debug!("Performing initial connectivity check");
-                first_run = false;
-            }
-
             match self.check_connectivity() {
                 Ok(_) => {
                     if consecutive_failures > 0 {
@@ -307,6 +298,14 @@ impl ConnectivityManager {
             }
         }
 
+        // If we get here, we've tried all networks and failed
+        // The last network should be the AP mode, so we should have an IP even without internet
+        if let Ok(current_ip) = self.get_current_ip() {
+            info!("No internet connectivity available. Operating in AP mode with IP: {}", current_ip);
+            self.last_ip = Some(current_ip);
+            return Ok(());  // No need to attempt email notification in AP mode
+        }
+
         Err(anyhow!("Failed to connect to any available network"))
     }
 
@@ -318,7 +317,9 @@ impl ConnectivityManager {
             let entry = entry?;
             let path = entry.path();
             
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+            if let Some(name) = path.file_stem()
+                .and_then(|n| n.to_str()) 
+            {
                 // Read priority from connection file
                 let priority = self.get_network_priority(&path).unwrap_or(0);
                 
@@ -338,7 +339,7 @@ impl ConnectivityManager {
     fn get_network_priority(&self, path: &PathBuf) -> Result<i32> {
         let content = std::fs::read_to_string(path)?;
         for line in content.lines() {
-            if line.starts_with("priority=") {
+            if line.starts_with("autoconnect-priority=") {
                 return Ok(line.split('=').nth(1)
                     .unwrap_or("0")
                     .parse()
@@ -349,10 +350,12 @@ impl ConnectivityManager {
     }
 
     fn connect_to_network(&self, network: &NetworkConnection) -> Result<()> {
+        info!("Attempting to connect to network '{}'", network.name);
+        
         let output = Command::new("nmcli")
             .args(["connection", "up", &network.name])
             .output()
-            .context("Failed to execute nmcli command")?;
+            .with_context(|| format!("Failed to execute nmcli command for network {}", network.name))?;
 
         if !output.status.success() {
             let error = String::from_utf8_lossy(&output.stderr);
@@ -363,13 +366,6 @@ impl ConnectivityManager {
     }
 
     fn send_ip_email(&mut self) -> Result<()> {
-        if let Some(last_sent) = self.metrics.last_email_sent {
-            if last_sent.elapsed() < self.config.email_rate_limit {
-                debug!("Skipping email notification due to rate limiting");
-                return Ok(());
-            }
-        }
-
         let email_config = EmailConfig {
             smtp_server: self.config.smtp_server.clone(),
             smtp_user: self.config.smtp_user.clone(),
@@ -377,14 +373,14 @@ impl ConnectivityManager {
             recipient: self.config.notification_email.clone(),
         };
 
-        let ip_changed = self.last_ip.is_some();
-        send_login_ticket(&email_config, if ip_changed {
-            LoginTicketReason::IpChanged
-        } else {
+        // Change reason based on whether this is initial boot or IP change
+        let reason = if self.last_ip.is_none() {
             LoginTicketReason::InitialLogin
-        })?;
+        } else {
+            LoginTicketReason::IpChanged
+        };
 
-        self.metrics.last_email_sent = Some(Instant::now());
+        send_login_ticket(&email_config, reason)?;
         counter!("network.email_notifications_sent", 1);
         Ok(())
     }
@@ -441,6 +437,64 @@ impl ConnectivityManager {
         // Store quality metric but don't use it for decision making
         self.metrics.connection_quality.insert(network_name.to_string(), quality);
         quality
+    }
+
+    // Add new method to force IP notification
+    fn force_ip_notification(&mut self) -> Result<()> {
+        info!("Waiting for initial network connectivity...");
+        
+        // Try for up to 2 minutes to get connectivity
+        let timeout = std::time::Duration::from_secs(120);
+        let start_time = std::time::Instant::now();
+        
+        while start_time.elapsed() < timeout {
+            // Check if we have internet connectivity
+            if !self.check_internet_connectivity() {
+                debug!("No internet connectivity, trying to connect to available networks...");
+                
+                // Try to connect to networks in priority order
+                if let Err(e) = self.try_connect_networks() {
+                    debug!("Failed to connect to any network: {}", e);
+                }
+            }
+            
+            // Get current IP and check if we're in AP mode
+            match self.get_current_ip() {
+                Ok(current_ip) => {
+                    // Check if this is an AP connection
+                    let networks = self.get_available_networks()?;
+                    let current_network = networks.last()  // AP should be last (lowest priority)
+                        .filter(|n| n.name == current_ip);  // Match by IP since we know AP's IP
+                    
+                    if current_network.is_some() {
+                        info!("Operating in AP mode with static IP: {}", current_ip);
+                        self.last_ip = Some(current_ip);
+                        return Ok(());  // No need to send email in AP mode
+                    }
+                    
+                    // Not in AP mode, proceed with email notification
+                    info!("Initial IP address: {}", current_ip);
+                    self.last_ip = Some(current_ip.clone());
+                    
+                    debug!("Sending initial IP notification email");
+                    if let Err(e) = self.send_ip_email() {
+                        warn!("Failed to send initial IP notification email: {}", e);
+                        return Err(e);
+                    }
+                    info!("Successfully sent initial IP notification email");
+                    return Ok(());
+                }
+                Err(e) => {
+                    debug!("Failed to get IP address, retrying: {}", e);
+                }
+            }
+            
+            debug!("Waiting for network connectivity... ({} seconds elapsed)", 
+                start_time.elapsed().as_secs());
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        
+        Err(anyhow!("Timeout waiting for initial network connectivity"))
     }
 }
 
@@ -654,5 +708,4 @@ struct NetworkMetrics {
     connection_attempts: HashMap<String, u32>,
     last_connection_time: HashMap<String, Instant>,
     connection_quality: HashMap<String, f64>,
-    last_email_sent: Option<Instant>,
 }
