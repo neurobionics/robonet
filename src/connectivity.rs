@@ -4,19 +4,18 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
-use crate::email::{EmailConfig, send_login_ticket, LoginTicketReason};
+use crate::email::{EmailConfig, send_login_ticket};
 use crate::logging;
 use crate::logging::ErrorCode;
 use std::collections::HashMap;
 use metrics::{counter, gauge};
+use std::io::BufRead;
 
 pub struct NetworkConfig {
     pub notification_email: String,
     pub smtp_server: String,
     pub smtp_user: String,
     pub smtp_password: String,
-    pub check_interval: Duration,
-    pub max_retries: u32,
     pub connection_retry_delay: Duration,
     pub stale_connection_threshold: Duration,
 }
@@ -32,16 +31,6 @@ impl NetworkConfig {
                 .context("SMTP_USER environment variable not set")?,
             smtp_password: std::env::var("SMTP_PASSWORD")
                 .context("SMTP_PASSWORD environment variable not set")?,
-            check_interval: Duration::from_secs(
-                std::env::var("CHECK_INTERVAL_SECS")
-                    .unwrap_or_else(|_| "300".to_string())
-                    .parse()
-                    .unwrap_or(300)
-            ),
-            max_retries: std::env::var("MAX_RETRIES")
-                .unwrap_or_else(|_| "3".to_string())
-                .parse()
-                .unwrap_or(3),
             connection_retry_delay: Duration::from_secs(
                 std::env::var("CONNECTION_RETRY_DELAY_SECS")
                     .unwrap_or_else(|_| "5".to_string())
@@ -80,65 +69,86 @@ impl ConnectivityManager {
     }
 
     pub fn run(&mut self) -> Result<()> {
-        info!("Initializing connectivity monitoring");
-        let mut consecutive_failures = 0;
+        info!("Initializing connectivity monitoring via wpa_cli events");
         
         // Force immediate IP check and notification on startup
         info!("Performing initial connectivity check on startup");
         self.force_ip_notification()?;
 
-        loop {
-            match self.check_connectivity() {
-                Ok(_) => {
-                    if consecutive_failures > 0 {
-                        info!("Connectivity restored after {} failures", consecutive_failures);
-                    }
-                    consecutive_failures = 0;
-                    debug!("Connectivity check successful, sleeping for {} seconds", 
-                          self.config.check_interval.as_secs());
-                    std::thread::sleep(self.config.check_interval);
-                }
-                Err(e) => {
-                    warn!("Connectivity check failed: {}", e);
-                    consecutive_failures += 1;
+        // Set up wpa_cli event monitoring
+        let wpa_cli = Command::new("wpa_cli")
+            .args(["-i", "wlan0", "monitor"])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .context("Failed to start wpa_cli monitor")?;
 
-                    if consecutive_failures >= self.config.max_retries {
-                        warn!("Maximum consecutive failures ({}) reached. Entering recovery mode...", 
-                              self.config.max_retries);
-                        // Wait for a longer period (e.g., 500 seconds) before retrying
-                        std::thread::sleep(Duration::from_secs(500));
-                        // Reset the counter to allow for new attempts
-                        consecutive_failures = 0;
-                    } else {
-                        debug!("Retry {}/{} in 30 seconds", 
-                               consecutive_failures, self.config.max_retries);
-                        std::thread::sleep(Duration::from_secs(30));
-                    }
+        let stdout = wpa_cli.stdout
+            .ok_or_else(|| anyhow!("Failed to capture wpa_cli stdout"))?;
+        let reader = std::io::BufReader::new(stdout);
+
+        // Process wpa_cli events
+        for line in reader.lines() {
+            let event = line.context("Failed to read wpa_cli event")?;
+            debug!("Received wpa_cli event: {}", event);
+
+            match self.handle_wpa_event(&event) {
+                Ok(_) => continue,
+                Err(e) => {
+                    warn!("Error handling wpa event: {}", e);
+                    // Continue monitoring even if we hit an error
                 }
             }
         }
+
+        Ok(())
     }
 
-    fn check_connectivity(&mut self) -> Result<()> {
-        // Add multiple DNS servers for redundancy
-        if !self.check_internet_connectivity() {
-            error!("{} Internet connectivity check failed", 
-                logging::error_code(ErrorCode::NetworkConnectFailed));
-            
-            // Add retry with different DNS servers before trying to reconnect
-            for dns in ["8.8.8.8", "1.1.1.1", "8.8.4.4"].iter() {
-                if self.check_internet_connectivity_with_dns(dns) {
-                    debug!("Connectivity restored using DNS server {}", dns);
-                    return Ok(());
-                }
-            }
-            
-            self.try_connect_networks()?;
+    fn handle_wpa_event(&mut self, event: &str) -> Result<()> {
+        // Parse wpa_cli event string
+        let parts: Vec<&str> = event.split('>').collect();
+        if parts.len() != 2 {
+            return Ok(()); // Ignore malformed events
         }
 
+        let event_data = parts[1].trim();
+        
+        match event_data {
+            // Connected to a network
+            s if s.starts_with("CTRL-EVENT-CONNECTED") => {
+                info!("Network connection established");
+                self.check_and_notify_ip_change()?;
+            },
+            
+            // Disconnected from network
+            s if s.starts_with("CTRL-EVENT-DISCONNECTED") => {
+                info!("Network connection lost");
+                // No need to send notification here, will send when we reconnect
+            },
+            
+            // Network configuration changed
+            s if s.starts_with("CTRL-EVENT-NETWORK-CHANGED") => {
+                info!("Network configuration changed");
+                self.check_and_notify_ip_change()?;
+            },
+            
+            // SSID changed
+            s if s.starts_with("CTRL-EVENT-SSID-CHANGED") => {
+                info!("SSID changed");
+                self.check_and_notify_ip_change()?;
+            },
+            
+            _ => {
+                // Ignore other events
+                debug!("Ignoring unhandled wpa_cli event: {}", event_data);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn check_and_notify_ip_change(&mut self) -> Result<()> {
         match self.get_current_ip() {
             Ok(current_ip) => {
-                // Only log and send email if IP has changed
                 if self.last_ip.as_ref() != Some(&current_ip) {
                     info!("IP address changed from {} to {}", 
                           self.last_ip.as_deref().unwrap_or("none"), 
@@ -159,27 +169,6 @@ impl ConnectivityManager {
                 Err(e)
             }
         }
-    }
-
-    fn check_internet_connectivity(&self) -> bool {
-        self.check_internet_connectivity_with_dns("8.8.8.8")
-    }
-
-    fn check_internet_connectivity_with_dns(&self, dns: &str) -> bool {
-        // Add timeout and multiple attempts
-        for _ in 0..3 {
-            let output = Command::new("ping")
-                .args(["-c", "1", "-W", "3", dns])
-                .output();
-
-            if let Ok(output) = output {
-                if output.status.success() {
-                    return true;
-                }
-            }
-            thread::sleep(Duration::from_secs(1));
-        }
-        false
     }
 
     fn get_current_ip(&self) -> Result<String> {
@@ -374,13 +363,7 @@ impl ConnectivityManager {
         };
 
         // Change reason based on whether this is initial boot or IP change
-        let reason = if self.last_ip.is_none() {
-            LoginTicketReason::InitialLogin
-        } else {
-            LoginTicketReason::IpChanged
-        };
-
-        send_login_ticket(&email_config, reason)?;
+        send_login_ticket(&email_config)?;
         counter!("network.email_notifications_sent", 1);
         Ok(())
     }
@@ -499,6 +482,27 @@ impl ConnectivityManager {
         }
         
         Err(anyhow!("Timeout waiting for initial network connectivity"))
+    }
+
+    fn check_internet_connectivity(&self) -> bool {
+        // Try multiple DNS servers for redundancy
+        for dns in ["8.8.8.8", "1.1.1.1"].iter() {
+            if self.check_internet_connectivity_with_dns(dns) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn check_internet_connectivity_with_dns(&self, dns: &str) -> bool {
+        let output = Command::new("ping")
+            .args(["-c", "1", "-W", "2", dns])  // 2 second timeout
+            .output();
+
+        match output {
+            Ok(output) => output.status.success(),
+            Err(_) => false,
+        }
     }
 }
 

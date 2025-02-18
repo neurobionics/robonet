@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use anyhow::{Context, Result};
 use networking::{NetworkMode, validate_args, generate_connection_file, write_connection_file, ensure_dnsmasq_config};
 use log::{info, error};
-use email::{EmailConfig, send_login_ticket, LoginTicketReason};
+use email::{EmailConfig, send_login_ticket};
 use service::install_service;
 use utils::{check_root_privileges, set_environment_variable, get_env_var};
 use logging::ErrorCode;
@@ -18,10 +18,6 @@ use connectivity::NetworkInfo;
 use regex::Regex;
 use lazy_static::lazy_static;
 
-// Add these constants near the top of the file
-const MAX_CHECK_INTERVAL: u64 = 300; // 5 minutes
-const MIN_CHECK_INTERVAL: u64 = 30; // 30 seconds
-const MAX_RETRIES: u32 = 10;
 const MAX_LOG_SIZE: u64 = 25 * 1024 * 1024; // 25MB
 const NETWORK_TIMEOUT: u64 = 30; // 30 seconds
 
@@ -93,13 +89,6 @@ enum Commands {
         #[arg(long)]
         smtp_password: Option<String>,
         
-        /// Check interval in seconds (default: 300)
-        #[arg(long, default_value = "180")]
-        check_interval: u64,
-        
-        /// Maximum number of retries (default: 3)
-        #[arg(long, default_value = "3")]
-        max_retries: u32,
     },
 
     /// Uninstall robonet package or its monitoring service
@@ -278,25 +267,7 @@ fn main() -> Result<()> {
             smtp_server, 
             smtp_user, 
             smtp_password, 
-            check_interval, 
-            max_retries 
         } => {
-            // Validate check interval
-            if *check_interval < MIN_CHECK_INTERVAL || *check_interval > MAX_CHECK_INTERVAL {
-                return Err(anyhow::anyhow!("{} Check interval must be between {} and {} seconds", 
-                    logging::error_code(ErrorCode::ServiceConfigError),
-                    MIN_CHECK_INTERVAL,
-                    MAX_CHECK_INTERVAL
-                ));
-            }
-
-            // Validate max retries
-            if *max_retries > MAX_RETRIES {
-                return Err(anyhow::anyhow!("{} Max retries cannot exceed {}", 
-                    logging::error_code(ErrorCode::ServiceConfigError),
-                    MAX_RETRIES
-                ));
-            }
 
             // Validate email addresses if provided
             if let Some(email) = email.as_ref() {
@@ -315,8 +286,6 @@ fn main() -> Result<()> {
                 smtp_server.as_deref(),
                 smtp_user.as_deref(),
                 smtp_password.as_deref(),
-                *check_interval,
-                *max_retries,
             )?;
         }
 
@@ -397,7 +366,7 @@ fn main() -> Result<()> {
                 recipients,
             };
 
-            send_login_ticket(&email_config, LoginTicketReason::ManualCheck)
+            send_login_ticket(&email_config)
                 .with_context(|| format!("{} Failed to send login ticket", 
                     logging::error_code(ErrorCode::EmailSendFailed)))?;
             

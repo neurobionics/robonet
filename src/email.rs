@@ -77,29 +77,16 @@ impl SystemInfo {
     }
 }
 
-#[derive(Debug)]
-pub enum LoginTicketReason {
-    InitialLogin,
-    IpChanged,
-    ManualCheck,
-}
-
-pub fn send_login_ticket(config: &EmailConfig, reason: LoginTicketReason) -> Result<()> {
+pub fn send_login_ticket(config: &EmailConfig) -> Result<()> {
     let system_info = SystemInfo::collect()
         .with_context(|| format!("{} Failed to collect system information",
             logging::error_code(logging::ErrorCode::EmailTemplateFailed)))?;
     
-    let status_type = match reason {
-        LoginTicketReason::InitialLogin => "New Login",
-        LoginTicketReason::IpChanged => "IP Address Change Alert",
-        LoginTicketReason::ManualCheck => "Manual Execution",
-    };
-
     // Read the template file from the compiled output directory
     let template = include_str!(concat!(env!("OUT_DIR"), "/templates/emails/login_ticket.html"));
 
     let html_content = template
-        .replace("{STATUS_TYPE}", status_type)
+        .replace("{STATUS_TYPE}", "WiFi Connection Alert")
         .replace("{HOSTNAME}", &system_info.hostname)
         .replace("{IP_ADDRESS}", &system_info.ip_address)
         .replace("{MAC_ADDRESS}", &system_info.mac_address)

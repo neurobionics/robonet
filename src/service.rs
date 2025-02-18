@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::process::{Command, Output};
 use std::path::Path;
 use std::os::unix::fs::PermissionsExt;
-use crate::email::{EmailConfig, send_login_ticket, LoginTicketReason};
+use crate::email::{EmailConfig, send_login_ticket};
 use crate::utils::{get_env_var, check_root_privileges};
 use crate::logging;
 use crate::logging::ErrorCode;
@@ -25,8 +25,6 @@ pub fn install_service(
     smtp_server: Option<&str>,
     smtp_user: Option<&str>,
     smtp_password: Option<&str>,
-    check_interval: u64,
-    max_retries: u32,
 ) -> Result<()> {
     check_root_privileges()?;
     info!("Installing network manager service");
@@ -66,7 +64,7 @@ pub fn install_service(
         recipients: recipients.clone(),
     };
 
-    if let Err(e) = send_login_ticket(&email_config, LoginTicketReason::InitialLogin) {
+    if let Err(e) = send_login_ticket(&email_config) {
         warn!("Email test failed: {}. Service will still be installed but email notifications may not work.", e);
         println!("Warning: Email test failed. Service will be installed but email notifications may not work.");
         println!("You can test email configuration later using 'robonet send-login-ticket'");
@@ -74,39 +72,31 @@ pub fn install_service(
         info!("Email test successful to {} recipient(s)", recipients.len());
     }
 
+    // Create service file with updated template
     let executable_path = std::env::current_exe()
         .context("Failed to get executable path")?;
 
-    // Validate executable path
-    if !executable_path.exists() {
-        return Err(anyhow!("Executable not found at: {}", executable_path.display()));
-    }
-
-    // Create service file path
-    let service_path = Path::new("/etc/systemd/system/robonet-monitor.service");
-
-    // Create a HashMap for template variables
     let mut vars = HashMap::new();
     vars.insert("EXECUTABLE_PATH", executable_path.display().to_string());
-    vars.insert("NOTIFICATION_EMAIL", email.to_string());
-    vars.insert("SMTP_SERVER", smtp_server.to_string());
-    vars.insert("SMTP_USER", smtp_user.to_string());
-    vars.insert("SMTP_PASSWORD", smtp_password.to_string());
-    vars.insert("CHECK_INTERVAL_SECS", check_interval.to_string());
-    vars.insert("MAX_RETRIES", max_retries.to_string());
+    vars.insert("NOTIFICATION_EMAIL", email);
+    vars.insert("SMTP_SERVER", smtp_server);
+    vars.insert("SMTP_USER", smtp_user);
+    vars.insert("SMTP_PASSWORD", smtp_password);
+
+    // Read the service template
+    let service_template = SERVICE_TEMPLATE.to_string();
 
     // Replace template variables
-    let service_content = vars.iter().fold(SERVICE_TEMPLATE.to_string(), |content, (key, value)| {
+    let service_content = vars.iter().fold(service_template, |content, (key, value)| {
         content.replace(&format!("${{{}}}", key), value)
     });
 
-    debug!("Writing service file to {}", service_path.display());
-    
-    // Write service file with proper permissions (644)
-    std::fs::write(service_path, service_content.as_bytes())
+    // Write our monitor service file
+    let service_path = Path::new("/etc/systemd/system/robonet-monitor.service");
+    std::fs::write(&service_path, service_content.as_bytes())
         .context("Failed to write service file")?;
     
-    std::fs::set_permissions(service_path, std::fs::Permissions::from_mode(0o644))
+    std::fs::set_permissions(&service_path, std::fs::Permissions::from_mode(0o644))
         .context("Failed to set service file permissions")?;
 
     // Reload systemd daemon
@@ -119,31 +109,23 @@ pub fn install_service(
         return Err(anyhow!("Failed to reload systemd daemon: {}", error_msg));
     }
 
+    // Enable and start only our monitor service
+    let service = "robonet-monitor";
+    
     // Enable service
-    let output = run_systemctl_command(&["enable", "robonet-monitor"])?;
+    let output = run_systemctl_command(&["enable", service])?;
     if !output.status.success() {
         let error_msg = String::from_utf8_lossy(&output.stderr);
-        error!("Failed to enable service: {}", error_msg);
-        // Cleanup on failure
-        let _ = std::fs::remove_file(service_path);
-        return Err(anyhow!("Failed to enable service: {}", error_msg));
+        error!("Failed to enable {}: {}", service, error_msg);
+        return Err(anyhow!("Failed to enable {}: {}", service, error_msg));
     }
 
     // Start service
-    let output = run_systemctl_command(&["start", "robonet-monitor"])?;
+    let output = run_systemctl_command(&["start", service])?;
     if !output.status.success() {
         let error_msg = String::from_utf8_lossy(&output.stderr);
-        error!("Failed to start service: {}", error_msg);
-        // Cleanup on failure
-        let _ = run_systemctl_command(&["disable", "robonet-monitor"]);
-        let _ = std::fs::remove_file(service_path);
-        return Err(anyhow!("Failed to start service: {}", error_msg));
-    }
-
-    // Verify service is running
-    let output = run_systemctl_command(&["is-active", "robonet-monitor"])?;
-    if !output.status.success() {
-        warn!("Service installed but may not be running properly. Please check status manually.");
+        error!("Failed to start {}: {}", service, error_msg);
+        return Err(anyhow!("Failed to start {}: {}", service, error_msg));
     }
 
     info!("Service installed and started successfully!");

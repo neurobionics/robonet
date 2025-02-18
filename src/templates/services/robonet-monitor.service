@@ -1,19 +1,18 @@
 [Unit]
-Description=Robotnet Monitor
-After=network.target
+Description=Network connectivity monitor with email notifications
+After=wpa_cli@wlan0.service
+BindsTo=wpa_cli@wlan0.service
 
 [Service]
 Type=simple
-ExecStart=${EXECUTABLE_PATH} run-service
+ExecStart=${EXECUTABLE_PATH} monitor \
+    --notification-email=${NOTIFICATION_EMAIL} \
+    --smtp-server=${SMTP_SERVER} \
+    --smtp-user=${SMTP_USER} \
+    --smtp-password=${SMTP_PASSWORD}
 Environment=RUST_LOG=info
-Environment=NOTIFICATION_EMAIL=${NOTIFICATION_EMAIL}
-Environment=SMTP_SERVER=${SMTP_SERVER}
-Environment=SMTP_USER=${SMTP_USER}
-Environment=SMTP_PASSWORD=${SMTP_PASSWORD}
-Environment=CHECK_INTERVAL_SECS=${CHECK_INTERVAL_SECS}
-Environment=MAX_RETRIES=${MAX_RETRIES}
-Restart=always
-RestartSec=30
+Restart=on-failure
+RestartSec=1
 
 [Install]
-WantedBy=multi-user.target 
+WantedBy=multi-user.target
