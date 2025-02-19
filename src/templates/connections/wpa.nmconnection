@@ -4,6 +4,7 @@ type=wifi
 interface-name=wlan0
 autoconnect=true
 autoconnect-priority={NETWORK_PRIORITY}
+autoconnect-retries=1
 
 [wifi]
 mode=infrastructure

@@ -245,12 +245,33 @@ fn main() -> Result<()> {
             
             match event.as_str() {
                 "CONNECTED" => {
+                    // Skip processing for loopback interface
+                    if interface == "lo" {
+                        info!("Skipping loopback interface connection");
+                        return Ok(());
+                    }
+
+                    // Skip processing for AP mode networks
+                    let is_ap_mode = std::process::Command::new("iwconfig")
+                        .arg(interface)
+                        .output()
+                        .map(|output| {
+                            let output_str = String::from_utf8_lossy(&output.stdout);
+                            output_str.contains("Mode:Master")
+                        })
+                        .unwrap_or(false);
+
+                    if is_ap_mode {
+                        info!("Skipping AP mode network connection (Mode:Master)");
+                        return Ok(());
+                    }
+
                     let mut retry_count = 0;
                     const MAX_RETRIES: u32 = 3;
                     
                     while retry_count < MAX_RETRIES {
-                        // Verify we have an IP address before attempting email
-                        if !ip_address.is_empty() {
+                        // Verify we have a valid non-loopback IP address
+                        if !ip_address.is_empty() && !ip_address.starts_with("127.") {
                             // Try to send login ticket email
                             match send_login_ticket(&EmailConfig::from_env()?) {
                                 Ok(_) => {
@@ -264,9 +285,27 @@ fn main() -> Result<()> {
                                 }
                             }
                         } else {
-                            warn!("No IP address available yet, waiting...");
+                            warn!("No valid IP address available yet, waiting...");
                             std::thread::sleep(std::time::Duration::from_secs(2));
                             retry_count += 1;
+                        }
+                    }
+
+                    // If we exceeded max retries, try the next network
+                    if retry_count >= MAX_RETRIES {
+                        warn!("Max retries exceeded. Attempting to connect to AP network...");
+                        // Try to connect to any available AP mode network
+                        if let Err(e) = std::process::Command::new("nmcli")
+                            .args(["connection", "show"])
+                            .output() {
+                            warn!("Failed to list network connections: {}", e);
+                        } else {
+                            // Find and connect to AP network
+                            if let Err(e) = std::process::Command::new("nmcli")
+                                .args(["connection", "up", "type", "wifi", "mode", "ap"])
+                                .status() {
+                                warn!("Failed to connect to AP network: {}", e);
+                            }
                         }
                     }
                 }
