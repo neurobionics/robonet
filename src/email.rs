@@ -7,12 +7,37 @@ use lettre::{
 use std::process::Command;
 use uuid::Uuid;
 use crate::logging;
+use crate::utils::get_env_var;
 
 pub struct EmailConfig {
     pub smtp_server: String,
     pub smtp_user: String,
     pub smtp_password: String,
     pub recipients: Vec<String>,
+}
+
+impl EmailConfig {
+    pub fn from_env() -> Result<Self> {
+        // Get and split email addresses
+        let email_addresses = get_env_var("EMAIL_ADDRESS")
+            .context("EMAIL_ADDRESS not configured")?;
+        
+        let recipients: Vec<String> = email_addresses
+            .split(',')
+            .map(str::trim)
+            .map(String::from)
+            .collect();
+
+        Ok(EmailConfig {
+            smtp_server: get_env_var("SMTP_SERVER")
+                .context("SMTP_SERVER not configured")?,
+            smtp_user: get_env_var("SMTP_USER")
+                .context("SMTP_USER not configured")?,
+            smtp_password: get_env_var("SMTP_PASSWORD")
+                .context("SMTP_PASSWORD not configured")?,
+            recipients,
+        })
+    }
 }
 
 pub struct SystemInfo {

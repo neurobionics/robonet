@@ -1,0 +1,40 @@
+#!/bin/sh
+# NetworkManager dispatcher script for robonet notifications
+
+INTERFACE="$1"
+STATUS="$2"
+CONNECTION_ID="$CONNECTION_ID"
+
+# Exit if interface or status is empty
+if [ -z "$INTERFACE" ] || [ -z "$STATUS" ]; then
+    exit 0
+fi
+
+# Source environment variables
+if [ -f /etc/environment ]; then
+    . /etc/environment
+fi
+
+# Export all NetworkManager provided variables
+export $(nmcli -t -f GENERAL.STATE,GENERAL.IP4-CONNECTIVITY connection show "$CONNECTION_ID" | tr ':' '=')
+
+case "$STATUS" in
+    up)
+        # Wait briefly for network stability
+        sleep 2
+        # Log the environment for debugging
+        env | grep -E 'EMAIL|SMTP|IP4|CONNECTION' | logger -t robonet
+        {executable} run-service "$INTERFACE" "CONNECTED" "$CONNECTION_ID"
+        ;;
+    down)
+        {executable} run-service "$INTERFACE" "DISCONNECTED" "$CONNECTION_ID"
+        ;;
+    pre-up)
+        logger "robonet: Pre-connection setup for $INTERFACE"
+        ;;
+    vpn-up|dhcp4-change|dhcp6-change)
+        logger "robonet: Network change event $STATUS on $INTERFACE"
+        ;;
+esac
+
+exit 0

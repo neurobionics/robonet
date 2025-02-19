@@ -6,12 +6,12 @@ pub const LOG_DIR: &str = "/var/log/robonet";
 
 // Error code categories
 pub const NETWORK_ERROR_BASE: u32 = 1000;
-pub const SERVICE_ERROR_BASE: u32 = 2000;
+// pub const SERVICE_ERROR_BASE: u32 = 2000;
 pub const EMAIL_ERROR_BASE: u32 = 3000;
 pub const SYSTEM_ERROR_BASE: u32 = 4000;
 pub const LOG_FILE_ERROR_BASE: u32 = 5000;
 pub const ENV_VAR_ERROR_BASE: u32 = 6000;
-pub const GENERAL_ERROR_BASE: u32 = 9000;
+// pub const GENERAL_ERROR_BASE: u32 = 9000;
 
 #[derive(Debug)]
 #[repr(u32)]
@@ -20,13 +20,9 @@ pub enum ErrorCode {
     NetworkConfigInvalid = NETWORK_ERROR_BASE,
     DnsmasqConfigFailed = NETWORK_ERROR_BASE + 1,
     ConnectionFileFailed = NETWORK_ERROR_BASE + 2,
-    NetworkConnectFailed = NETWORK_ERROR_BASE + 3,
-    NetworkScanFailed = NETWORK_ERROR_BASE + 4,
     
     // Service related (2000-2999)
-    ServiceConfigError = SERVICE_ERROR_BASE,
-    ServiceInstallFailed = SERVICE_ERROR_BASE + 1,
-    ServiceUninstallFailed = SERVICE_ERROR_BASE + 2,
+    // ServiceConfigError = SERVICE_ERROR_BASE,
     
     // Email related (3000-3999)
     EmailConfigMissing = EMAIL_ERROR_BASE,
@@ -50,7 +46,7 @@ pub enum ErrorCode {
     EnvVarEmpty = ENV_VAR_ERROR_BASE + 2,
 
     // General (9000-9999)
-    UnexpectedError = GENERAL_ERROR_BASE + 999,
+    // UnexpectedError = GENERAL_ERROR_BASE + 999,
 }
 
 pub fn error_code(code: ErrorCode) -> String {

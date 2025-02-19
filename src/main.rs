@@ -8,13 +8,11 @@ mod utils;
 use clap::{Parser, Subcommand};
 use anyhow::{Context, Result};
 use networking::{NetworkMode, validate_args, generate_connection_file, write_connection_file, ensure_dnsmasq_config};
-use log::{info, error};
+use log::{info, warn};
 use email::{EmailConfig, send_login_ticket};
 use service::install_service;
 use utils::{check_root_privileges, set_environment_variable, get_env_var};
 use logging::ErrorCode;
-use chrono::Local;
-use connectivity::NetworkInfo;
 use regex::Regex;
 use lazy_static::lazy_static;
 
@@ -66,9 +64,20 @@ enum Commands {
         user_id: Option<String>,
     },
     
-    /// Run as a connectivity monitoring service
+    /// Run as a network event handler
     #[command(name = "run-service")]
-    RunService,
+    RunService {
+        /// Interface name
+        interface: String,
+        
+        /// Network event (CONNECTED/DISCONNECTED)
+        #[arg(default_value = "")]
+        event: String,
+        
+        /// Additional event data
+        #[arg(default_value = "")]
+        data: String,
+    },
 
     /// Install systemd service and configure email settings
     #[command(name = "install")]
@@ -131,26 +140,6 @@ enum Commands {
         #[arg(short = 'i', long = "interval", default_value = "15")]
         interval: u64,
     },
-
-    /// Map nearby WiFi networks
-    #[command(name = "map-networks")]
-    MapNetworks {
-        /// Scan interval in seconds
-        #[arg(short = 'i', long = "interval", default_value = "5")]
-        interval: u64,
-
-        /// Total duration to run in seconds
-        #[arg(short = 't', long = "time", default_value = "300")]
-        duration: u64,
-
-        /// Maximum number of networks to log per scan (default: 10)
-        #[arg(short = 'n', long = "networks", default_value = "10")]
-        max_networks: usize,
-
-        /// Filter by SSID (optional)
-        #[arg(short = 's', long = "ssid")]
-        ssid_filter: Option<String>,
-    },
 }
 
 fn main() -> Result<()> {
@@ -175,14 +164,13 @@ fn main() -> Result<()> {
     info!("Robot Network Manager executing: {}", 
         match &cli.command {
             Commands::AddNetwork { .. } => "add-network",
-            Commands::RunService => "run-service",
+            Commands::RunService { .. } => "run-service",
             Commands::Install { .. } => "install",
             Commands::Uninstall { .. } => "uninstall",
             Commands::SetEnv { .. } => "set-env",
             Commands::SendLoginTicket => "send-login-ticket",
             Commands::ViewLog { .. } => "view-log",
             Commands::TestConnectivity { .. } => "test-connectivity",
-            Commands::MapNetworks { .. } => "map-networks",
         }
     );
 
@@ -244,21 +232,50 @@ fn main() -> Result<()> {
             }
         }
         
-        Commands::RunService => {
-            info!("{} Starting connectivity monitoring service", 
-                logging::error_code(ErrorCode::UnexpectedError));
+        Commands::RunService { interface, event, data } => {
+            info!("Network event: {} on {} ({})", event, interface, data);
             
-            let config = connectivity::NetworkConfig::from_env()
-                .with_context(|| format!("{} Failed to load configuration", 
-                    logging::error_code(ErrorCode::ServiceConfigError)))?;
+            // Get relevant environment variables from NetworkManager
+            let nm_action = std::env::var("NM_DISPATCHER_ACTION").unwrap_or_default();
+            let ip_address = std::env::var("IP4_ADDRESS_0").unwrap_or_default();
+            let connection_uuid = std::env::var("CONNECTION_UUID").unwrap_or_default();
             
-            let mut manager = connectivity::ConnectivityManager::new(config);
+            info!("NetworkManager details - Action: {}, IP: {}, UUID: {}", 
+                nm_action, ip_address, connection_uuid);
             
-            info!("Connectivity monitoring active");
-            
-            if let Err(e) = manager.run() {
-                error!("Service error: {}", e);
-                return Err(e);
+            match event.as_str() {
+                "CONNECTED" => {
+                    let mut retry_count = 0;
+                    const MAX_RETRIES: u32 = 3;
+                    
+                    while retry_count < MAX_RETRIES {
+                        // Verify we have an IP address before attempting email
+                        if !ip_address.is_empty() {
+                            // Try to send login ticket email
+                            match send_login_ticket(&EmailConfig::from_env()?) {
+                                Ok(_) => {
+                                    info!("Successfully sent login ticket email");
+                                    break;
+                                }
+                                Err(e) => {
+                                    warn!("Failed to send email (attempt {}): {}", retry_count + 1, e);
+                                    retry_count += 1;
+                                    std::thread::sleep(std::time::Duration::from_secs(5));
+                                }
+                            }
+                        } else {
+                            warn!("No IP address available yet, waiting...");
+                            std::thread::sleep(std::time::Duration::from_secs(2));
+                            retry_count += 1;
+                        }
+                    }
+                }
+                "DISCONNECTED" => {
+                    info!("Network disconnected - Connection: {}", data);
+                }
+                _ => {
+                    info!("Unhandled network event: {}", event);
+                }
             }
         }
 
@@ -563,27 +580,6 @@ fn main() -> Result<()> {
             println!("\nTest completed. Results saved to: {}", filename);
         }
 
-        Commands::MapNetworks { interval, duration, max_networks, ssid_filter } => {
-            let timestamp = Local::now().format("%Y%m%d_%H%M%S");
-            let filename = format!("network_map_{}{}.csv", 
-                ssid_filter.as_ref().map(|s| format!("_{}", s)).unwrap_or_default(),
-                timestamp);
-            
-            println!("Starting network mapping:");
-            println!("Scan interval: {} seconds", interval);
-            println!("Total duration: {} seconds", duration);
-            println!("Networks per scan: {}", max_networks);
-            if let Some(ssid) = &ssid_filter {
-                println!("Filtering for SSID: {}", ssid);
-            }
-            println!("Output file: {}", filename);
-
-            NetworkInfo::map_networks(*interval, *duration, *max_networks, &filename, ssid_filter.as_deref())
-                .with_context(|| format!("{} Network mapping failed", 
-                    logging::error_code(ErrorCode::NetworkScanFailed)))?;
-
-            println!("\nMapping completed. Results saved to: {}", filename);
-        }
     }
 
     Ok(())

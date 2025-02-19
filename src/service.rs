@@ -1,24 +1,14 @@
-use anyhow::{Context, Result, anyhow};
-use log::{info, debug, error, warn};
-use std::collections::HashMap;
-use std::process::{Command, Output};
+use anyhow::{Context, Result};
+use log::info;
 use std::path::Path;
 use std::os::unix::fs::PermissionsExt;
-use crate::email::{EmailConfig, send_login_ticket};
-use crate::utils::{get_env_var, check_root_privileges};
-use crate::logging;
-use crate::logging::ErrorCode;
+use crate::utils::check_root_privileges;
+use crate::utils::set_environment_variable;
+use std::fs;
 
-pub const SERVICE_TEMPLATE: &str = include_str!("templates/services/robonet-monitor.service");
-
-fn run_systemctl_command(args: &[&str]) -> Result<Output> {
-    Command::new("systemctl")
-        .args(args)
-        .output()
-        .with_context(|| format!("{} Failed to execute systemctl command: {:?}",
-            logging::error_code(ErrorCode::ServiceInstallFailed),
-            args))
-}
+const DISPATCHER_DIR: &str = "/etc/NetworkManager/dispatcher.d";
+const DISPATCHER_SCRIPT_NAME: &str = "90-robonet-notify";
+const DISPATCHER_TEMPLATE: &str = include_str!("templates/dispatchers/90-robonet-notify");
 
 pub fn install_service(
     email: Option<&str>,
@@ -27,149 +17,59 @@ pub fn install_service(
     smtp_password: Option<&str>,
 ) -> Result<()> {
     check_root_privileges()?;
-    info!("Installing network manager service");
-    debug!("Email: {:?}, SMTP Server: {:?}", email, smtp_server);
-    
-    let email = email
-        .map(String::from)
-        .or_else(|| get_env_var("EMAIL_ADDRESS").ok())
-        .context("Email address not provided. Set EMAIL_ADDRESS environment variable or use --email flag")?;
-    
-    let smtp_server = smtp_server
-        .map(String::from)
-        .or_else(|| get_env_var("SMTP_SERVER").ok())
-        .context("SMTP server not provided. Set SMTP_SERVER environment variable or use --smtp-server flag")?;
-    
-    let smtp_user = smtp_user
-        .map(String::from)
-        .or_else(|| get_env_var("SMTP_USER").ok())
-        .context("SMTP username not provided. Set SMTP_USER environment variable or use --smtp-user flag")?;
-    
-    let smtp_password = smtp_password
-        .map(String::from)
-        .or_else(|| get_env_var("SMTP_PASSWORD").ok())
-        .context("SMTP password not provided. Set SMTP_PASSWORD environment variable or use --smtp-password flag")?;
+    info!("Installing NetworkManager dispatcher script");
 
-    // Test email configuration before installing service
-    let recipients: Vec<String> = email.split(',')
-        .map(str::trim)
-        .map(String::from)
-        .collect();
-
-    info!("Testing email configuration with {} recipient(s)", recipients.len());
-    let email_config = EmailConfig {
-        smtp_server: smtp_server.to_string(),
-        smtp_user: smtp_user.to_string(),
-        smtp_password: smtp_password.to_string(),
-        recipients: recipients.clone(),
-    };
-
-    if let Err(e) = send_login_ticket(&email_config) {
-        warn!("Email test failed: {}. Service will still be installed but email notifications may not work.", e);
-        println!("Warning: Email test failed. Service will be installed but email notifications may not work.");
-        println!("You can test email configuration later using 'robonet send-login-ticket'");
-    } else {
-        info!("Email test successful to {} recipient(s)", recipients.len());
+    // First, ensure environment variables are set system-wide
+    if let Some(email) = email {
+        set_environment_variable("EMAIL_ADDRESS", email)?;
+    }
+    if let Some(server) = smtp_server {
+        set_environment_variable("SMTP_SERVER", server)?;
+    }
+    if let Some(user) = smtp_user {
+        set_environment_variable("SMTP_USER", user)?;
+    }
+    if let Some(pass) = smtp_password {
+        set_environment_variable("SMTP_PASSWORD", pass)?;
     }
 
-    // Create service file with updated template
+    // Get executable path
     let executable_path = std::env::current_exe()
         .context("Failed to get executable path")?;
-
-    let mut vars = HashMap::new();
-    vars.insert("EXECUTABLE_PATH", executable_path.display().to_string());
-    vars.insert("NOTIFICATION_EMAIL", email);
-    vars.insert("SMTP_SERVER", smtp_server);
-    vars.insert("SMTP_USER", smtp_user);
-    vars.insert("SMTP_PASSWORD", smtp_password);
-
-    // Read the service template
-    let service_template = SERVICE_TEMPLATE.to_string();
-
-    // Replace template variables
-    let service_content = vars.iter().fold(service_template, |content, (key, value)| {
-        content.replace(&format!("${{{}}}", key), value)
-    });
-
-    // Write our monitor service file
-    let service_path = Path::new("/etc/systemd/system/robonet-monitor.service");
-    std::fs::write(&service_path, service_content.as_bytes())
-        .context("Failed to write service file")?;
     
-    std::fs::set_permissions(&service_path, std::fs::Permissions::from_mode(0o644))
-        .context("Failed to set service file permissions")?;
+    // Create dispatcher script content from template
+    let script_content = DISPATCHER_TEMPLATE.replace("{executable}", &executable_path.display().to_string());
 
-    // Reload systemd daemon
-    let output = run_systemctl_command(&["daemon-reload"])?;
-    if !output.status.success() {
-        let error_msg = String::from_utf8_lossy(&output.stderr);
-        error!("{} Failed to reload systemd daemon: {}", 
-            logging::error_code(ErrorCode::ServiceInstallFailed),
-            error_msg);
-        return Err(anyhow!("Failed to reload systemd daemon: {}", error_msg));
-    }
+    // Ensure dispatcher directory exists
+    fs::create_dir_all(DISPATCHER_DIR)
+        .context("Failed to create dispatcher directory")?;
 
-    // Enable and start only our monitor service
-    let service = "robonet-monitor";
-    
-    // Enable service
-    let output = run_systemctl_command(&["enable", service])?;
-    if !output.status.success() {
-        let error_msg = String::from_utf8_lossy(&output.stderr);
-        error!("Failed to enable {}: {}", service, error_msg);
-        return Err(anyhow!("Failed to enable {}: {}", service, error_msg));
-    }
+    // Write dispatcher script
+    let script_path = Path::new(DISPATCHER_DIR).join(DISPATCHER_SCRIPT_NAME);
+    fs::write(&script_path, script_content)
+        .context("Failed to write dispatcher script")?;
 
-    // Start service
-    let output = run_systemctl_command(&["start", service])?;
-    if !output.status.success() {
-        let error_msg = String::from_utf8_lossy(&output.stderr);
-        error!("Failed to start {}: {}", service, error_msg);
-        return Err(anyhow!("Failed to start {}: {}", service, error_msg));
-    }
+    // Set executable permissions (755)
+    fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
+        .context("Failed to set dispatcher script permissions")?;
 
-    info!("Service installed and started successfully!");
-    println!("Service installed and started successfully!");
-    println!("To check service status: sudo systemctl status robonet-monitor");
-    println!("To view logs: sudo journalctl -u robonet-monitor -f");
+    println!("NetworkManager dispatcher script installed successfully!");
+    println!("Script location: {}", script_path.display());
 
     Ok(())
 }
 
 pub fn uninstall_service() -> Result<()> {
     check_root_privileges()?;
-    info!("Uninstalling network manager service");
+    info!("Removing NetworkManager dispatcher script");
 
-    // Stop the service if it's running
-    let output = run_systemctl_command(&["stop", "robonet-monitor"])?;
-    if !output.status.success() {
-        warn!("Failed to stop service, it might not be running");
+    // Remove the dispatcher script
+    let script_path = Path::new(DISPATCHER_DIR).join(DISPATCHER_SCRIPT_NAME);
+    if script_path.exists() {
+        fs::remove_file(&script_path)
+            .context("Failed to remove dispatcher script")?;
     }
 
-    // Disable the service
-    let output = run_systemctl_command(&["disable", "robonet-monitor"])?;
-    if !output.status.success() {
-        let error_msg = String::from_utf8_lossy(&output.stderr);
-        error!("{} Failed to disable service: {}", 
-            logging::error_code(ErrorCode::ServiceUninstallFailed),
-            error_msg);
-    }
-
-    // Remove the service file
-    let service_path = Path::new("/etc/systemd/system/robonet-monitor.service");
-    if service_path.exists() {
-        std::fs::remove_file(service_path)
-            .context("Failed to remove service file")?;
-    }
-
-    // Reload systemd daemon
-    let output = run_systemctl_command(&["daemon-reload"])?;
-    if !output.status.success() {
-        warn!("Failed to reload systemd daemon after uninstall");
-    }
-
-    info!("Network manager service uninstalled successfully");
-    println!("Network manager service has been uninstalled");
-
+    println!("NetworkManager dispatcher script has been removed");
     Ok(())
 } 
