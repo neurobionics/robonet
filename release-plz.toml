@@ -13,7 +13,7 @@ git_tag_enable = true
 git_tag_name = "{{ version }}"
 
 # disable GitHub releases
-git_release_enable = false
+git_release_enable = true
 
 # labels for the release PR
 pr_labels = ["release"]
