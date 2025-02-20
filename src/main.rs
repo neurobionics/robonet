@@ -145,22 +145,22 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     
-    // Check root privileges first for commands that need them
+    // Set up logging first, before privilege check
+    logging::setup_logging()?;
+    
+    // Only check root privileges for commands that need them
     match &cli.command {
-        Commands::AddNetwork { .. } |
-        Commands::Install { .. } |
-        Commands::Uninstall { .. } |
-        Commands::SetEnv { .. } => {
+        Commands::AddNetwork { .. } |  // Needs root to modify network configs
+        Commands::Install { .. } |     // Needs root to install system service
+        Commands::Uninstall { .. } |   // Needs root to remove system service
+        Commands::SetEnv { .. } => {   // Needs root to set system-wide env vars
             check_root_privileges()
                 .with_context(|| format!("{} Permission denied", 
                     logging::error_code(ErrorCode::PermissionDenied)))?;
         }
-        _ => {}
+        _ => {}  // Other commands like SendLoginTicket don't need root
     }
 
-    // Set up logging after privilege check
-    logging::setup_logging()?;
-    
     info!("Robot Network Manager executing: {}", 
         match &cli.command {
             Commands::AddNetwork { .. } => "add-network",
