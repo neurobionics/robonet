@@ -145,10 +145,10 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     
-    // Set up logging first, before privilege check
+    // Set up logging first
     logging::setup_logging()?;
     
-    // Only check root privileges for commands that need them
+    // Only check root privileges for commands that actually need them
     match &cli.command {
         Commands::AddNetwork { .. } |  // Needs root to modify network configs
         Commands::Install { .. } |     // Needs root to install system service
@@ -158,7 +158,7 @@ fn main() -> Result<()> {
                 .with_context(|| format!("{} Permission denied", 
                     logging::error_code(ErrorCode::PermissionDenied)))?;
         }
-        _ => {}  // Other commands like SendLoginTicket don't need root
+        _ => {}  // Other commands don't need root
     }
 
     info!("Robot Network Manager executing: {}", 
@@ -438,8 +438,13 @@ fn main() -> Result<()> {
                     logging::error_code(ErrorCode::LogFileInvalid)));
             }
             
+            // Get the log directory path
+            let data_dir = std::env::var("XDG_DATA_HOME")
+                .unwrap_or_else(|_| format!("{}/.local/share", std::env::var("HOME").unwrap_or_default()));
+            let log_dir = format!("{}/{}", data_dir, logging::LOG_DIR_NAME);
+            
             // List all files in the log directory
-            let entries = std::fs::read_dir(logging::LOG_DIR)
+            let entries = std::fs::read_dir(&log_dir)
                 .context("Failed to read log directory")?;
             
             // Find the most recent matching log file
@@ -474,8 +479,8 @@ fn main() -> Result<()> {
                     println!("{}", content);
                 }
                 None => {
-                    println!("Available log files:");
-                    if let Ok(entries) = std::fs::read_dir(logging::LOG_DIR) {
+                    println!("Available log files in {}:", log_dir);
+                    if let Ok(entries) = std::fs::read_dir(&log_dir) {
                         for entry in entries {
                             if let Ok(entry) = entry {
                                 println!("  {}", entry.file_name().to_string_lossy());

@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use tracing_subscriber::EnvFilter;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 
-pub const LOG_DIR: &str = "/var/log/robonet";
+pub const LOG_DIR_NAME: &str = "robonet/logs";
 
 // Error code categories
 pub const NETWORK_ERROR_BASE: u32 = 1000;
@@ -54,9 +54,16 @@ pub fn error_code(code: ErrorCode) -> String {
 }
 
 pub fn setup_logging() -> Result<()> {
+    // Get XDG data directory, fallback to ~/.local/share if not set
+    let data_dir = std::env::var("XDG_DATA_HOME")
+        .unwrap_or_else(|_| format!("{}/.local/share", std::env::var("HOME").unwrap_or_default()));
+    
+    let log_dir = format!("{}/{}", data_dir, LOG_DIR_NAME);
+
     // Create log directory if it doesn't exist
-    std::fs::create_dir_all(LOG_DIR)
-        .with_context(|| format!("{} Failed to create log directory", error_code(ErrorCode::LoggingSetupFailed)))?;
+    std::fs::create_dir_all(&log_dir)
+        .with_context(|| format!("{} Failed to create log directory", 
+            error_code(ErrorCode::LoggingSetupFailed)))?;
 
     // Main application log file
     let main_appender = RollingFileAppender::builder()
@@ -64,8 +71,9 @@ pub fn setup_logging() -> Result<()> {
         .filename_prefix("main")
         .filename_suffix("log")
         .max_log_files(7)
-        .build(LOG_DIR)
-        .with_context(|| format!("{} Failed to create main file appender", error_code(ErrorCode::LoggingSetupFailed)))?;
+        .build(&log_dir)
+        .with_context(|| format!("{} Failed to create main file appender", 
+            error_code(ErrorCode::LoggingSetupFailed)))?;
 
     // Set up the subscriber with the appender
     tracing_subscriber::fmt()
