@@ -9,7 +9,7 @@ changelog_update = true
 dependencies_update = true
 
 # create tags for the releases
-git_tag_enable = false
+git_tag_enable = true
 git_tag_name = "{{ version }}"
 
 # disable GitHub releases
