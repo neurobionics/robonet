@@ -111,7 +111,7 @@ pub fn send_login_ticket(config: &EmailConfig) -> Result<()> {
     let template = include_str!(concat!(env!("OUT_DIR"), "/templates/emails/login_ticket.html"));
 
     let html_content = template
-        .replace("{STATUS_TYPE}", "WiFi Connection Alert")
+        .replace("{STATUS_TYPE}", "New Login Ticket")
         .replace("{HOSTNAME}", &system_info.hostname)
         .replace("{IP_ADDRESS}", &system_info.ip_address)
         .replace("{MAC_ADDRESS}", &system_info.mac_address)
@@ -120,7 +120,7 @@ pub fn send_login_ticket(config: &EmailConfig) -> Result<()> {
         .replace("{TIMESTAMP}", &system_info.timestamp);
 
     let mut builder = Message::builder()
-        .from("Raspberry Pi <raspberry.pi@localhost>".parse()?);
+        .from(format!("{} <raspberry.pi@localhost>", system_info.hostname).parse()?);
 
     // Add all recipients
     for recipient in &config.recipients {
