@@ -11,7 +11,6 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
 use regex::Regex;
 use lazy_static::lazy_static;
-use std::path::PathBuf;
 
 pub const SYSTEM_CONNECTIONS_PATH: &str = "/etc/NetworkManager/system-connections/";
 const NETWORK_MANAGER_CONFIG_PATH: &str = "/etc/NetworkManager/NetworkManager.conf";
@@ -20,10 +19,14 @@ lazy_static! {
     static ref VALID_NAME_REGEX: Regex = Regex::new(r"^[a-zA-Z0-9_-]+$").unwrap();
 }
 
-const TEMPLATE_DIR: &str = "src/templates/connections";
 const MAX_SSID_LENGTH: usize = 32;
 const MIN_PASSWORD_LENGTH: usize = 8;
 const MAX_PASSWORD_LENGTH: usize = 63;
+
+// Remove the old template path constants and replace with the embedded templates
+const AP_TEMPLATE: &str = include_str!("templates/connections/ap.nmconnection");
+const WPA_TEMPLATE: &str = include_str!("templates/connections/wpa.nmconnection");
+const WPAEAP_TEMPLATE: &str = include_str!("templates/connections/wpaeap.nmconnection");
 
 #[derive(Clone, ValueEnum, Debug)]
 pub enum NetworkMode {
@@ -98,22 +101,12 @@ pub fn generate_connection_file(mode: &NetworkMode, name: &str, password: &str, 
         return Err(anyhow!("Priority must be a valid number"));
     }
 
-    // Construct template path safely
-    let template_name = match mode {
-        NetworkMode::AP => "ap.nmconnection",
-        NetworkMode::WPA => "wpa.nmconnection",
-        NetworkMode::WPAEAP => "wpaeap.nmconnection",
+    // Get the appropriate template
+    let template = match mode {
+        NetworkMode::AP => AP_TEMPLATE,
+        NetworkMode::WPA => WPA_TEMPLATE,
+        NetworkMode::WPAEAP => WPAEAP_TEMPLATE,
     };
-
-    let template_path = PathBuf::from(TEMPLATE_DIR).join(template_name);
-    
-    // Verify template exists and is a file
-    if !template_path.is_file() {
-        return Err(anyhow!("Template file not found: {}", template_path.display()));
-    }
-
-    let template = fs::read_to_string(&template_path)
-        .with_context(|| format!("Failed to read template file: {}", template_path.display()))?;
 
     let mut replacements = HashMap::new();
     match mode {
@@ -136,7 +129,7 @@ pub fn generate_connection_file(mode: &NetworkMode, name: &str, password: &str, 
         },
     }
 
-    let mut content = template;
+    let mut content = template.to_string();
     for (key, value) in replacements {
         content = content.replace(key, value);
     }
