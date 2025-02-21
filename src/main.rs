@@ -359,14 +359,14 @@ fn main() -> Result<()> {
                     }
                 }
                 None => {
-                    println!("Are you sure you want to uninstall the entire robonet package? [y/N]");
+                    println!("Are you sure you want to uninstall the robonet dispatcher? [y/N]");
                     let mut input = String::new();
                     std::io::stdin().read_line(&mut input)?;
                     if input.trim().eq_ignore_ascii_case("y") {
                         // First uninstall the service if it exists
                         let _ = service::uninstall_service();
                         // TODO: Add package uninstallation logic here
-                        println!("Package uninstallation not yet implemented");
+                        println!("To completely uninstall the robonet package, please use: `sudo dpkg -r robonet`");
                     } else {
                         println!("Uninstall cancelled");
                     }
